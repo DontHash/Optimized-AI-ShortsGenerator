@@ -6,3 +6,6 @@ venv/
 output/
 *.mp4
 .DS_Store
+# Nested C# reference clone — download policy was ported into shorts_generator/downloader.py
+YoutubeDownloader/
+graphify-out/

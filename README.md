@@ -74,7 +74,7 @@ Queue runs write `output/queue_report.json` (`ok` / `failed`). Existing `clips.j
 |------|---------|-------|
 | `--num-clips` | `3` | Max clips kept per video |
 | `--min-score` | `0` | Drop clips below this score |
-| `--format` | `1080` | Download height cap |
+| `--format` | `max` | Uncapped best (YoutubeDownloader-style Highest+Mp4), or `360`/`480`/`720`/`1080` |
 | `--language` | auto | Whisper language code |
 | `--render` | off | Cut original-ratio mp4s |
 | `--accurate-cut` | off | With `--render`, re-encode for frame-accurate cuts |
@@ -100,11 +100,11 @@ Env knobs: `CAPTION_FONT`, `CAPTION_FONT_SIZE`, `CAPTION_HIGHLIGHT_COLOR`, `CAPT
 | `LOCAL_WHISPER_MODEL` | `base` | tiny → large-v3 |
 | `LOCAL_WHISPER_DEVICE` | `auto` | auto / cpu / cuda |
 | `LOCAL_OUTPUT_DIR` | `output` | Root output folder |
-| `DOWNLOAD_FORMAT` | `1080` | 360 / 480 / 720 / 1080 |
+| `DOWNLOAD_FORMAT` | `max` | `max` (uncapped) or 360 / 480 / 720 / 1080 |
 
 ## How it works
 
-1. Download (yt-dlp, cached) at up to 1080p
+1. Download (yt-dlp, cached) at max available quality by default (mp4-preferring merge)
 2. Transcribe (faster-whisper, SRT-cached)
 3. Rank highlights via LLM (virality framework: hooks, peaks, opinion bombs, …)
 4. Snap timestamps to sentence boundaries; attach transcript excerpts

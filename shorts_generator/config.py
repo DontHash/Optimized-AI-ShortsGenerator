@@ -13,7 +13,8 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "base")
 LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "auto")  # auto / cpu / cuda
 OUTPUT_DIR = os.getenv("LOCAL_OUTPUT_DIR", os.getenv("OUTPUT_DIR", "output"))
-DOWNLOAD_FORMAT = os.getenv("DOWNLOAD_FORMAT", "1080")
+# max / highest = uncapped (YoutubeDownloader Highest); or 360/480/720/1080
+DOWNLOAD_FORMAT = os.getenv("DOWNLOAD_FORMAT", "max")
 
 # VAD for faster-whisper — off by default (too aggressive on mixed speech/music)
 LOCAL_WHISPER_VAD_FILTER = os.getenv("LOCAL_WHISPER_VAD_FILTER", "false").strip().lower() == "true"

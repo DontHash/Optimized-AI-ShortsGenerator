@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 
 from .clipper import render_clips
 from .config import DOWNLOAD_FORMAT, OUTPUT_DIR
-from .downloader import download_youtube, extract_youtube_video_id
+from .downloader import download_youtube, extract_youtube_video_id, find_local_source
 from .highlights import get_highlights
 from .llm import call_llm
 from .transcriber import transcribe
@@ -87,10 +87,13 @@ def find_clips(
         with open(clips_json_path, encoding="utf-8") as f:
             payload = json.load(f)
         if render and not any(c.get("clip_path") for c in payload.get("clips", [])):
-            # Need source on disk to render
-            source_path, _info = download_youtube(
-                youtube_url, fmt=download_format or DOWNLOAD_FORMAT, out_dir=video_dir
+            source_path = find_local_source(
+                video_dir, video_id, fmt=download_format or DOWNLOAD_FORMAT
             )
+            if not source_path:
+                source_path, _info = download_youtube(
+                    youtube_url, fmt=download_format or DOWNLOAD_FORMAT, out_dir=video_dir
+                )
             payload["clips"] = render_clips(
                 source_path, payload["clips"], out_dir=video_dir, accurate=accurate_cut
             )
@@ -98,9 +101,10 @@ def find_clips(
                 json.dump(payload, f, indent=2)
         return payload
 
-    source_path, info = download_youtube(
-        youtube_url, fmt=download_format or DOWNLOAD_FORMAT, out_dir=video_dir
-    )
+    fmt = download_format or DOWNLOAD_FORMAT
+    if force and find_local_source(video_dir, video_id, fmt=fmt):
+        print("[pipeline] --force retry: reusing cached download/transcript when available", flush=True)
+    source_path, info = download_youtube(youtube_url, fmt=fmt, out_dir=video_dir)
     video_title = str(info.get("title") or video_id)
 
     # Put transcript cache next to the source so re-runs stay cheap

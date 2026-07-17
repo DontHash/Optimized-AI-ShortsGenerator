@@ -137,13 +137,19 @@ def chunk_transcript(transcript: Dict) -> List[Dict]:
     while start < duration:
         end = min(start + CHUNK_SIZE_SECONDS, duration)
         chunk_segs = [
-            s for s in segments
+            # Rebase to chunk-relative time: the LLM sees [0s..chunk_len] and its
+            # output validates against chunk duration; get_highlights adds the
+            # offset back. Absolute times here made every chunk after the first
+            # fail sanitization (clamped to end<=start) and then double-offset.
+            {**s, "start": s["start"] - start, "end": s["end"] - start}
+            for s in segments
             if s["start"] >= start and s["end"] <= end + CHUNK_OVERLAP_SECONDS
         ]
         if chunk_segs:
             chunk = dict(transcript)
             chunk["segments"] = chunk_segs
-            chunk["duration"] = end - start
+            # Validate against what the LLM actually sees (includes overlap tail)
+            chunk["duration"] = chunk_segs[-1]["end"]
             chunk["_offset"] = start
             chunks.append(chunk)
         start += CHUNK_SIZE_SECONDS - CHUNK_OVERLAP_SECONDS

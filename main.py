@@ -1,5 +1,5 @@
 """CLI — find viral clips from one or more YouTube URLs.
-
+# python main.py "https://www.youtube.com/watch?v=C4WC7rKNYYk" --num-clips 5 --min-score 70 --format max --language en --render --accurate-cut --force
 Usage:
     python main.py "https://www.youtube.com/watch?v=..."
     python main.py URL1 URL2 URL3 --num-clips 5
@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument(
         "--format",
         default=DOWNLOAD_FORMAT,
-        help=f"Download resolution: 360 / 480 / 720 / 1080 (default: {DOWNLOAD_FORMAT})",
+        help=f"Download quality: max (uncapped) | 360 / 480 / 720 / 1080 (default: {DOWNLOAD_FORMAT})",
     )
     parser.add_argument("--language", default=None, help="Force Whisper language, e.g. 'en'")
     parser.add_argument(
@@ -52,7 +52,7 @@ def main() -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Redo even if output/<video_id>/clips.json already exists",
+        help="Redo clip analysis even if clips.json exists; still reuses cached download/transcript",
     )
     args = parser.parse_args()
 

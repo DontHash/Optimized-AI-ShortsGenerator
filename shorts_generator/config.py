@@ -1,4 +1,5 @@
 import os
+import sys
 
 from dotenv import load_dotenv
 
@@ -15,6 +16,37 @@ LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "auto")  # auto / cpu /
 OUTPUT_DIR = os.getenv("LOCAL_OUTPUT_DIR", os.getenv("OUTPUT_DIR", "output"))
 # max / highest = uncapped (YoutubeDownloader Highest); or 360/480/720/1080
 DOWNLOAD_FORMAT = os.getenv("DOWNLOAD_FORMAT", "max")
+
+
+def _env(key: str, default: str = "") -> str:
+    """Read env var; treat inline-comment garbage as empty (common .env mistake)."""
+    raw = os.getenv(key, default)
+    if raw is None:
+        return default
+    val = raw.strip()
+    if val.startswith("#"):
+        return ""
+    return val
+
+
+def _default_cookies_browser() -> str:
+    """Platform default for yt-dlp cookiesfrombrowser (unlock HD/4K + PO tokens)."""
+    if sys.platform == "win32":
+        return "edge"
+    if sys.platform == "darwin":
+        return "chrome"
+    return "chrome"
+
+
+_cookies_raw = _env("YTDLP_COOKIES_FROM_BROWSER")
+if _cookies_raw.lower() in ("none", "false", "off", "0"):
+    YTDLP_COOKIES_FROM_BROWSER = ""
+elif _cookies_raw:
+    YTDLP_COOKIES_FROM_BROWSER = _cookies_raw
+else:
+    YTDLP_COOKIES_FROM_BROWSER = _default_cookies_browser()
+
+YTDLP_COOKIES_FILE = _env("YTDLP_COOKIES_FILE")
 
 # VAD for faster-whisper — off by default (too aggressive on mixed speech/music)
 LOCAL_WHISPER_VAD_FILTER = os.getenv("LOCAL_WHISPER_VAD_FILTER", "false").strip().lower() == "true"

@@ -55,22 +55,28 @@ def main() -> int:
         help="Redo clip analysis even if clips.json exists; still reuses cached download/transcript",
     )
     parser.add_argument(
+        "--no-browser-cookies",
+        action="store_true",
+        help="Do not read YouTube cookies from your browser (cookies are on by default)",
+    )
+    parser.add_argument(
         "--cookies-from-browser",
         default=None,
         metavar="BROWSER",
-        help="Use your browser's YouTube cookies to look authentic (chrome/edge/firefox/brave). "
-        "Fixes most HTTP 403 errors. Optionally BROWSER:PROFILE.",
+        help="Override default browser for cookies (edge/chrome/firefox/brave; optionally BROWSER:PROFILE)",
     )
     parser.add_argument(
         "--cookies",
         default=None,
         metavar="FILE",
-        help="Path to a cookies.txt file (alternative to --cookies-from-browser)",
+        help="Path to a cookies.txt file (alternative to browser cookies)",
     )
     args = parser.parse_args()
 
     import os
-    if args.cookies_from_browser:
+    if args.no_browser_cookies:
+        os.environ["YTDLP_COOKIES_FROM_BROWSER"] = "none"
+    elif args.cookies_from_browser:
         os.environ["YTDLP_COOKIES_FROM_BROWSER"] = args.cookies_from_browser
     if args.cookies:
         os.environ["YTDLP_COOKIES_FILE"] = args.cookies

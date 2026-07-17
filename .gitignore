@@ -3,7 +3,9 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-output/
+cookies.json
+cookies.txt
+output/.cookies_netscape.txt
 *.mp4
 .DS_Store
 # Nested C# reference clone — download policy was ported into shorts_generator/downloader.py

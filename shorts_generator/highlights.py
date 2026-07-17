@@ -1,30 +1,17 @@
-"""Find the most viral-worthy highlights in a transcript.
-
-Logic ported from ViralVadoo's transcript_analysis/highlight_generator.py:
-  - content-type / density detection
-  - chunking for long videos with overlap
-  - virality-criteria prompt
-  - score-based dedupe with overlap suppression
-
-The LLM call is pluggable via the `llm_fn` argument so the same prompts can
-drive either MuAPI (default, --mode api) or a direct local LLM client
-(--mode local).
-"""
+"""Find viral-worthy highlights in a transcript via LLM ranking."""
 import json
 import re
 from typing import Callable, Dict, List, Optional
 
-from . import muapi
-
+from .config import BOUNDARY_PAD_SECONDS
+from .llm import call_llm
 
 LLMFn = Callable[[str], str]
-
 
 CONTENT_TYPE_PROMPT = """Analyze this video transcript sample and classify the content type.
 Choose one: podcast, interview, tutorial, lecture, commentary, debate, vlog, other.
 Also estimate content density: low (mostly filler/chit-chat), medium, or high (dense info/stories).
 Respond with JSON only: {"content_type": "...", "density": "..."}"""
-
 
 VIRALITY_CRITERIA = """
 Virality signals to prioritize (ranked by impact):
@@ -37,7 +24,6 @@ Virality signals to prioritize (ranked by impact):
 7. STORY PEAKS — the climax or twist of an anecdote; the payoff moment
 8. PRACTICAL VALUE — a concrete tip, hack, or insight the viewer can immediately apply
 """
-
 
 HIGHLIGHT_SYSTEM_PROMPT = """You are an elite short-form video editor who has studied thousands of viral clips on TikTok, Instagram Reels, and YouTube Shorts. You know exactly what makes viewers stop scrolling, watch to the end, and share.
 
@@ -60,43 +46,13 @@ Rules:
 Respond ONLY with valid JSON (no markdown, no explanation):
 {{"highlights":[{{"title":"string","start_time":float,"end_time":float,"score":int,"hook_sentence":"string","virality_reason":"string"}}]}}"""
 
-
-CHUNK_SIZE_SECONDS = 1200       # 20-min chunks for long videos
-LONG_VIDEO_THRESHOLD = 1800     # chunk videos longer than 30 min
+CHUNK_SIZE_SECONDS = 1200
+LONG_VIDEO_THRESHOLD = 1800
 CHUNK_OVERLAP_SECONDS = 60
-GPT_CALL_TIMEOUT_SECONDS = 300  # cap LLM polls at 5 min — a wedged call should fail fast
-MAX_HIGHLIGHT_API_ATTEMPTS = 3
-
-
-def call_muapi_llm(prompt: str) -> str:
-    """Default LLM backend: MuAPI gpt-5-mini."""
-    result = muapi.run(
-        "gpt-5-mini",
-        {"prompt": prompt},
-        label="gpt-5-mini",
-        timeout=GPT_CALL_TIMEOUT_SECONDS,
-    )
-
-    outputs = result.get("outputs")
-    if isinstance(outputs, list) and outputs and isinstance(outputs[0], str) and outputs[0].strip():
-        return outputs[0]
-
-    for key in ("output", "text", "response", "result", "content"):
-        v = result.get(key)
-        if isinstance(v, str) and v.strip():
-            return v
-        if isinstance(v, dict):
-            inner = v.get("text") or v.get("content")
-            if isinstance(inner, str) and inner.strip():
-                return inner
-        if isinstance(v, list) and v and isinstance(v[0], str):
-            return v[0]
-
-    raise RuntimeError(f"Could not extract gpt-5-mini text from response: {result}")
+MAX_HIGHLIGHT_ATTEMPTS = 3
 
 
 def _parse_json_loose(raw: str) -> Dict:
-    """gpt-5-4 sometimes wraps JSON in markdown fences — strip and parse."""
     text = raw.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
@@ -125,7 +81,6 @@ def _coerce_int(value: object, default: int = 0) -> int:
 
 
 def _sanitize_highlights(raw_highlights: object, duration: float) -> List[Dict]:
-    """Normalize model output into the expected shape; skip invalid entries."""
     if not isinstance(raw_highlights, list):
         return []
 
@@ -156,17 +111,15 @@ def _sanitize_highlights(raw_highlights: object, duration: float) -> List[Dict]:
                 "virality_reason": str(item.get("virality_reason") or "").strip(),
             }
         )
-
     return cleaned
 
 
-def detect_content_type(transcript: Dict, llm_fn: LLMFn = call_muapi_llm) -> Dict[str, str]:
+def detect_content_type(transcript: Dict, llm_fn: LLMFn = call_llm) -> Dict[str, str]:
     segments = transcript.get("segments", [])
     sample = " ".join(s["text"] for s in segments[:25])[:3000]
     prompt = f"{CONTENT_TYPE_PROMPT}\n\nTranscript sample:\n{sample}"
     try:
-        raw = llm_fn(prompt)
-        return _parse_json_loose(raw)
+        return _parse_json_loose(llm_fn(prompt))
     except Exception:
         return {"content_type": "other", "density": "medium"}
 
@@ -203,10 +156,8 @@ def call_highlight_api(
     duration: float,
     num_clips: int,
     is_chunk: bool = False,
-    llm_fn: LLMFn = call_muapi_llm,
+    llm_fn: LLMFn = call_llm,
 ) -> Dict:
-    # Ask for ~2× the user's target so dedupe has headroom, but cap so the model
-    # doesn't have to generate a huge JSON payload (which times out gpt-5-mini).
     target = max(num_clips * 2, 5)
     natural_max = max(2 if is_chunk else 3, int(duration / 90))
     min_clips = min(target, natural_max, 8)
@@ -220,7 +171,7 @@ def call_highlight_api(
     prompt = base_prompt
     last_error = "unknown"
 
-    for attempt in range(1, MAX_HIGHLIGHT_API_ATTEMPTS + 1):
+    for attempt in range(1, MAX_HIGHLIGHT_ATTEMPTS + 1):
         raw = llm_fn(prompt)
         try:
             parsed = _parse_json_loose(raw)
@@ -231,9 +182,9 @@ def call_highlight_api(
         except Exception as e:
             last_error = str(e)
 
-        if attempt < MAX_HIGHLIGHT_API_ATTEMPTS:
+        if attempt < MAX_HIGHLIGHT_ATTEMPTS:
             print(
-                f"[highlights] invalid model output on attempt {attempt}/{MAX_HIGHLIGHT_API_ATTEMPTS}; retrying",
+                f"[highlights] invalid model output on attempt {attempt}/{MAX_HIGHLIGHT_ATTEMPTS}; retrying",
                 flush=True,
             )
             prompt = (
@@ -244,12 +195,11 @@ def call_highlight_api(
             )
 
     raise RuntimeError(
-        f"Highlight generator produced invalid output after {MAX_HIGHLIGHT_API_ATTEMPTS} attempts: {last_error}"
+        f"Highlight generator produced invalid output after {MAX_HIGHLIGHT_ATTEMPTS} attempts: {last_error}"
     )
 
 
 def dedupe_highlights(highlights: List[Dict]) -> List[Dict]:
-    """Drop a highlight if it overlaps >50% with a higher-scoring one already kept."""
     highlights = sorted(highlights, key=lambda x: int(x.get("score", 0)), reverse=True)
     kept: List[Dict] = []
     for h in highlights:
@@ -269,20 +219,71 @@ def dedupe_highlights(highlights: List[Dict]) -> List[Dict]:
     return kept
 
 
+def snap_to_sentence_boundaries(
+    highlights: List[Dict],
+    segments: List[Dict],
+    pad: float = BOUNDARY_PAD_SECONDS,
+) -> List[Dict]:
+    """Snap start back / end forward to nearest transcript segment edges."""
+    if not segments:
+        return highlights
+
+    starts = [float(s["start"]) for s in segments]
+    ends = [float(s["end"]) for s in segments]
+    snapped = []
+    for h in highlights:
+        start = float(h["start_time"])
+        end = float(h["end_time"])
+
+        # Nearest segment start at or before `start` (prefer pulling back)
+        best_start = starts[0]
+        for s in starts:
+            if s <= start + 0.05:
+                best_start = s
+            else:
+                break
+        best_start = max(0.0, best_start - pad)
+
+        # Nearest segment end at or after `end` (prefer extending forward)
+        best_end = ends[-1]
+        for e in ends:
+            if e >= end - 0.05:
+                best_end = e
+                break
+        best_end = best_end + pad
+
+        if best_end <= best_start:
+            snapped.append(h)
+            continue
+        snapped.append({**h, "start_time": best_start, "end_time": min(best_end, ends[-1] + pad)})
+    return snapped
+
+
+def transcript_excerpt(segments: List[Dict], start: float, end: float) -> str:
+    parts = [
+        str(s.get("text", "")).strip()
+        for s in segments
+        if float(s["end"]) > start and float(s["start"]) < end
+    ]
+    return " ".join(p for p in parts if p)
+
+
 def get_highlights(
     transcript: Dict,
     num_clips: int = 3,
     llm_fn: Optional[LLMFn] = None,
+    min_score: int = 0,
 ) -> Dict:
-    """Main entry point — returns {highlights: [...]} sorted by score.
-
-    `llm_fn` swaps the underlying LLM. Defaults to MuAPI gpt-5-mini; local
-    mode passes in a local LLM-backed callable.
-    """
-    llm_fn = llm_fn or call_muapi_llm
+    """Return {highlights: [...]} sorted by score, boundary-snapped, with excerpts."""
+    llm_fn = llm_fn or call_llm
     duration = transcript.get("duration", 0)
+    segments = transcript.get("segments", [])
     content_info = detect_content_type(transcript, llm_fn=llm_fn)
-    print(f"[highlights] content={content_info.get('content_type')} density={content_info.get('density')} duration={duration:.0f}s", flush=True)
+    print(
+        f"[highlights] content={content_info.get('content_type')} "
+        f"density={content_info.get('density')} duration={duration:.0f}s",
+        flush=True,
+    )
 
     if duration >= LONG_VIDEO_THRESHOLD:
         chunks = chunk_transcript(transcript)
@@ -292,7 +293,9 @@ def get_highlights(
             offset = chunk.get("_offset", 0)
             text = build_transcript_text(chunk)
             print(f"[highlights] chunk {i + 1}/{len(chunks)} (offset {offset:.0f}s)", flush=True)
-            result = call_highlight_api(text, content_info, chunk["duration"], num_clips=num_clips, is_chunk=True, llm_fn=llm_fn)
+            result = call_highlight_api(
+                text, content_info, chunk["duration"], num_clips=num_clips, is_chunk=True, llm_fn=llm_fn
+            )
             for h in result.get("highlights", []):
                 h["start_time"] = float(h["start_time"]) + offset
                 h["end_time"] = float(h["end_time"]) + offset
@@ -302,5 +305,15 @@ def get_highlights(
         text = build_transcript_text(transcript)
         result = call_highlight_api(text, content_info, duration, num_clips=num_clips, llm_fn=llm_fn)
         highlights = dedupe_highlights(result.get("highlights", []))
+
+    highlights = snap_to_sentence_boundaries(highlights, segments)
+
+    if min_score > 0:
+        highlights = [h for h in highlights if int(h.get("score", 0)) >= min_score]
+
+    for h in highlights:
+        h["transcript_excerpt"] = transcript_excerpt(
+            segments, float(h["start_time"]), float(h["end_time"])
+        )
 
     return {"highlights": highlights}

@@ -1,123 +1,147 @@
-"""End-to-end orchestrator.
-
-Two modes:
-  * mode="api"   (default) — MuAPI does download / transcribe / LLM / autocrop.
-                              Fast, no local deps, pay-per-call.
-  * mode="local"            — yt-dlp + faster-whisper + OpenAI or Gemini + ffmpeg/opencv.
-                              Self-hosted, LLM_PROVIDER selects OpenAI or Gemini.
-"""
+"""Clip-finding pipeline: download → transcribe → rank → clips.json (optional render)."""
+import json
+import os
+import re
 from typing import Dict, List, Optional
 
-from .clipper import crop_highlights
-from .downloader import download_youtube
-from .highlights import call_muapi_llm, get_highlights
+from .clipper import render_clips
+from .config import DOWNLOAD_FORMAT, OUTPUT_DIR
+from .downloader import download_youtube, extract_youtube_video_id
+from .highlights import get_highlights
+from .llm import call_llm
 from .transcriber import transcribe
 
 
-def _run_local(
-    youtube_url: str,
+def _slugify(title: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (title or "clip").lower()).strip("-")
+    return (slug or "clip")[:60]
+
+
+def format_hms(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:04.1f}"
+
+
+def _build_clips_payload(
+    video_id: str,
+    video_title: str,
+    source_url: str,
+    duration: float,
+    highlights: List[Dict],
     num_clips: int,
-    aspect_ratio: str,
-    download_format: str,
-    language: Optional[str],
 ) -> Dict:
-    from .local.clipper import crop_highlights_local
-    from .local.downloader import download_youtube_local
-    from .local.llm import call_local_llm
-    from .local.transcriber import transcribe_local
-
-    source_path = download_youtube_local(youtube_url, fmt=download_format)
-
-    transcript = transcribe_local(source_path, language=language)
-    if not transcript["segments"]:
-        raise RuntimeError(
-            "Whisper produced no segments. The video may have no detectable speech."
-        )
-
-    highlights_result = get_highlights(transcript, num_clips=num_clips, llm_fn=call_local_llm)
-    all_highlights: List[Dict] = highlights_result.get("highlights", [])
-    if not all_highlights:
-        raise RuntimeError("Highlight generator returned zero clips.")
-
-    top = sorted(all_highlights, key=lambda h: int(h.get("score", 0)), reverse=True)[:num_clips]
-    print(f"[pipeline/local] cropping {len(top)} of {len(all_highlights)} candidates", flush=True)
-
-    shorts = crop_highlights_local(source_path, top, aspect_ratio=aspect_ratio)
-
+    top = sorted(highlights, key=lambda h: int(h.get("score", 0)), reverse=True)[:num_clips]
+    clips = []
+    for rank, h in enumerate(top, 1):
+        start = float(h["start_time"])
+        end = float(h["end_time"])
+        title = str(h.get("title") or "Untitled")
+        clips.append({
+            "rank": rank,
+            "name": _slugify(title),
+            "title": title,
+            "start_time": start,
+            "end_time": end,
+            "start_hms": format_hms(start),
+            "end_hms": format_hms(end),
+            "score": int(h.get("score", 0)),
+            "hook_sentence": h.get("hook_sentence", ""),
+            "virality_reason": h.get("virality_reason", ""),
+            "transcript_excerpt": h.get("transcript_excerpt", ""),
+        })
     return {
-        "mode": "local",
-        "source_video_url": source_path,
-        "transcript": transcript,
-        "highlights": all_highlights,
-        "shorts": shorts,
+        "video_id": video_id,
+        "video_title": video_title,
+        "source_url": source_url,
+        "duration": duration,
+        "clips": clips,
     }
 
 
-def _run_api(
-    youtube_url: str,
-    num_clips: int,
-    aspect_ratio: str,
-    download_format: str,
-    language: Optional[str],
-) -> Dict:
-    source_url = download_youtube(youtube_url, fmt=download_format)
-
-    transcript = transcribe(source_url, language=language)
-    if not transcript["segments"]:
-        raise RuntimeError(
-            "Whisper produced no segments. The video may have no detectable speech."
-        )
-
-    highlights_result = get_highlights(transcript, num_clips=num_clips, llm_fn=call_muapi_llm)
-    all_highlights: List[Dict] = highlights_result.get("highlights", [])
-    if not all_highlights:
-        raise RuntimeError("Highlight generator returned zero clips.")
-
-    top = sorted(all_highlights, key=lambda h: int(h.get("score", 0)), reverse=True)[:num_clips]
-    print(f"[pipeline] cropping {len(top)} of {len(all_highlights)} candidates", flush=True)
-
-    shorts = crop_highlights(source_url, top, aspect_ratio=aspect_ratio)
-
-    return {
-        "mode": "api",
-        "source_video_url": source_url,
-        "transcript": transcript,
-        "highlights": all_highlights,
-        "shorts": shorts,
-    }
-
-
-def generate_shorts(
+def find_clips(
     youtube_url: str,
     num_clips: int = 3,
-    aspect_ratio: str = "9:16",
-    download_format: str = "720",
+    download_format: Optional[str] = None,
     language: Optional[str] = None,
-    mode: str = "api",
+    min_score: int = 0,
+    render: bool = False,
+    accurate_cut: bool = False,
+    force: bool = False,
+    out_root: Optional[str] = None,
 ) -> Dict:
-    """Run the full pipeline and return a structured result.
+    """Find viral moments. Writes output/<video_id>/clips.json. Render is opt-in."""
+    video_id = extract_youtube_video_id(youtube_url)
+    if not video_id:
+        raise RuntimeError(f"YouTube URL required (got {youtube_url!r})")
 
-    Args:
-        youtube_url: source URL.
-        num_clips: how many shorts to render.
-        aspect_ratio: e.g. "9:16", "1:1".
-        download_format: source resolution ("360" / "480" / "720" / "1080").
-        language: ISO-639-1 to force Whisper language detection.
-        mode: "api" (default, MuAPI) or "local" (yt-dlp + faster-whisper +
-            OpenAI or Gemini + ffmpeg).
+    out_root = out_root or OUTPUT_DIR
+    video_dir = os.path.join(out_root, video_id)
+    clips_json_path = os.path.join(video_dir, "clips.json")
+    os.makedirs(video_dir, exist_ok=True)
 
-    Returns:
-        {
-          "mode": "api" | "local",
-          "source_video_url": str,   # hosted URL (api) or local path (local)
-          "transcript": {...},
-          "highlights": [...],       # all candidates ranked
-          "shorts": [...],           # top `num_clips` with clip_url / local path
-        }
-    """
-    mode = (mode or "api").lower()
-    if mode == "local":
-        return _run_local(youtube_url, num_clips, aspect_ratio, download_format, language)
-    if mode == "api":
-        return _run_api(youtube_url, num_clips, aspect_ratio, download_format, language)
-    raise ValueError(f"Unknown mode: {mode!r}. Use 'api' or 'local'.")
+    if os.path.exists(clips_json_path) and not force:
+        print(f"[pipeline] skipping (exists): {clips_json_path}  (use --force to redo)", flush=True)
+        with open(clips_json_path, encoding="utf-8") as f:
+            payload = json.load(f)
+        if render and not any(c.get("clip_path") for c in payload.get("clips", [])):
+            # Need source on disk to render
+            source_path, _info = download_youtube(
+                youtube_url, fmt=download_format or DOWNLOAD_FORMAT, out_dir=video_dir
+            )
+            payload["clips"] = render_clips(
+                source_path, payload["clips"], out_dir=video_dir, accurate=accurate_cut
+            )
+            with open(clips_json_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+        return payload
+
+    source_path, info = download_youtube(
+        youtube_url, fmt=download_format or DOWNLOAD_FORMAT, out_dir=video_dir
+    )
+    video_title = str(info.get("title") or video_id)
+
+    # Put transcript cache next to the source so re-runs stay cheap
+    transcript = transcribe(source_path, language=language, cache_dir=video_dir)
+    if not transcript["segments"]:
+        raise RuntimeError("Whisper produced no segments. The video may have no detectable speech.")
+
+    highlights_result = get_highlights(
+        transcript, num_clips=num_clips, llm_fn=call_llm, min_score=min_score
+    )
+    all_highlights: List[Dict] = highlights_result.get("highlights", [])
+    if not all_highlights:
+        raise RuntimeError("Highlight generator returned zero clips.")
+
+    duration = float(transcript.get("duration") or info.get("duration") or 0)
+    payload = _build_clips_payload(
+        video_id=video_id,
+        video_title=video_title,
+        source_url=youtube_url,
+        duration=duration,
+        highlights=all_highlights,
+        num_clips=num_clips,
+    )
+
+    if render:
+        print(f"[pipeline] rendering {len(payload['clips'])} clips", flush=True)
+        payload["clips"] = render_clips(
+            source_path, payload["clips"], out_dir=video_dir, accurate=accurate_cut
+        )
+
+    with open(clips_json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    print(f"[pipeline] wrote {clips_json_path}", flush=True)
+
+    payload["_all_highlights"] = all_highlights  # for CLI summary; not in clips.json
+    payload["_clips_json"] = clips_json_path
+    return payload
+
+
+# Back-compat alias
+def generate_shorts(*args, **kwargs) -> Dict:
+    kwargs.pop("aspect_ratio", None)
+    kwargs.pop("mode", None)
+    return find_clips(*args, **kwargs)

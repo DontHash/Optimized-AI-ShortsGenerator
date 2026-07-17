@@ -59,11 +59,63 @@ def _parse_json_loose(raw: str) -> Dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1:
-            return json.loads(text[start:end + 1])
-        raise
+        # Drop trailing commas (a common model mistake) then retry
+        repaired = re.sub(r",\s*([}\]])", r"\1", text)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1:
+                return json.loads(re.sub(r",\s*([}\]])", r"\1", text[start:end + 1]))
+            raise
+
+
+def _salvage_highlights(raw: str) -> List[Dict]:
+    """Regex-extract flat highlight objects when strict JSON parsing fails.
+
+    LLMs (especially on non-English transcripts) often emit unescaped inner
+    quotes or a missing comma, which breaks json.loads for the whole batch. Our
+    schema is flat (no nested braces), so we can pull each {...} block and read
+    the numeric fields — which never contain quotes — regardless of string mess.
+    """
+    objects = re.findall(r"\{[^{}]*\}", raw, re.DOTALL)
+    salvaged: List[Dict] = []
+    for obj in objects:
+        def _num(key: str) -> Optional[str]:
+            m = re.search(rf'"{key}"\s*:\s*(-?\d+(?:\.\d+)?)', obj)
+            return m.group(1) if m else None
+
+        def _str(key: str) -> str:
+            m = re.search(rf'"{key}"\s*:\s*"(.*?)"\s*(?:,|\}})', obj, re.DOTALL)
+            return m.group(1).strip() if m else ""
+
+        start, end = _num("start_time"), _num("end_time")
+        if start is None or end is None:
+            continue
+        salvaged.append(
+            {
+                "title": _str("title") or "Untitled Highlight",
+                "start_time": start,
+                "end_time": end,
+                "score": _num("score") or 0,
+                "hook_sentence": _str("hook_sentence"),
+                "virality_reason": _str("virality_reason"),
+            }
+        )
+    return salvaged
+
+
+def _extract_highlights(raw: str, duration: float) -> List[Dict]:
+    """Strict parse first, then regex salvage — returns sanitized highlights."""
+    try:
+        parsed = _parse_json_loose(raw)
+        highlights = _sanitize_highlights(parsed.get("highlights"), duration=duration)
+        if highlights:
+            return highlights
+    except Exception:
+        pass
+    return _sanitize_highlights(_salvage_highlights(raw), duration=duration)
 
 
 def _coerce_float(value: object, default: float = 0.0) -> float:
@@ -182,8 +234,7 @@ def call_highlight_api(
     for attempt in range(1, MAX_HIGHLIGHT_ATTEMPTS + 1):
         raw = llm_fn(prompt)
         try:
-            parsed = _parse_json_loose(raw)
-            highlights = _sanitize_highlights(parsed.get("highlights"), duration=duration)
+            highlights = _extract_highlights(raw, duration=duration)
             if highlights:
                 return {"highlights": highlights}
             last_error = "no valid highlights in response"

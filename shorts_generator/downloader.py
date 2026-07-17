@@ -16,6 +16,54 @@ _MAX_ALIASES = frozenset({"max", "highest", "best", "maxres"})
 _LOW_ALIASES = frozenset({"lowest", "min", "worst"})
 _MEDIA_EXTS = (".mp4", ".mkv", ".webm")
 
+# A current desktop browser UA — helps requests look like a real viewer, not a bot.
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+# Player clients tried in order until one serves the media without a 403.
+# 'tv' and the mobile clients most reliably dodge YouTube's media-URL blocks.
+_DEFAULT_PLAYER_CLIENTS = ("tv", "ios", "web_safari", "android", "mweb", "web")
+
+
+def _auth_opts() -> Dict:
+    """Cookie options (read at call time so a --cookies-from-browser flag applies)."""
+    opts: Dict = {}
+    browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+    cookiefile = os.getenv("YTDLP_COOKIES_FILE", "").strip()
+    if browser:
+        # yt-dlp expects a tuple: (browser, profile, keyring, container)
+        opts["cookiesfrombrowser"] = tuple(p.strip() or None for p in browser.split(":"))
+    if cookiefile:
+        opts["cookiefile"] = cookiefile
+    return opts
+
+
+def _player_clients() -> list:
+    raw = os.getenv("YTDLP_PLAYER_CLIENTS", "").strip()
+    if raw:
+        return [c.strip() for c in raw.split(",") if c.strip()]
+    return list(_DEFAULT_PLAYER_CLIENTS)
+
+
+def _base_opts(out_dir: str, fmt: str, tag: str) -> Dict:
+    """Shared yt-dlp options that make us look authentic + resilient."""
+    opts: Dict = {
+        "format": _format_for(fmt),
+        "outtmpl": os.path.join(out_dir, f"source_%(id)s_{tag}.%(ext)s"),
+        "merge_output_format": "mp4",
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "http_headers": {"User-Agent": _USER_AGENT},
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 3,
+        "socket_timeout": 30,
+    }
+    opts.update(_auth_opts())
+    return opts
+
 
 def _import_ytdlp():
     try:
@@ -131,7 +179,13 @@ def _save_meta(source_path: str, info: Dict) -> None:
 def _probe_info(video_url: str, video_id: str) -> Dict:
     """One lightweight metadata fetch (no download) for signals backfill."""
     yt_dlp = _import_ytdlp()
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "http_headers": {"User-Agent": _USER_AGENT},
+    }
+    opts.update(_auth_opts())
     with yt_dlp.YoutubeDL(opts) as ydl:
         try:
             return ydl.extract_info(video_url, download=False)
@@ -246,24 +300,42 @@ def download_youtube(
 
     label = "max" if tag == "max" else f"{tag}p"
     print(f"[download] {video_url} @ {label} → {out_dir}/", flush=True)
-    ydl_opts = {
-        "format": _format_for(fmt),
-        "outtmpl": os.path.join(out_dir, f"source_%(id)s_{tag}.%(ext)s"),
-        "merge_output_format": "mp4",
-        "quiet": True,
-        "no_warnings": True,
-        "noprogress": True,
-    }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(video_url, download=True)
-        path = ydl.prepare_filename(info)
-        if not os.path.exists(path):
-            stem, _ = os.path.splitext(path)
-            for ext in _MEDIA_EXTS:
-                if os.path.exists(stem + ext):
-                    path = stem + ext
-                    break
+    base_opts = _base_opts(out_dir, fmt, tag)
+    using_cookies = "cookiesfrombrowser" in base_opts or "cookiefile" in base_opts
+    clients = _player_clients()
+    info = None
+    path = None
+    last_err: Optional[Exception] = None
+
+    for client in clients:
+        ydl_opts = dict(base_opts)
+        ydl_opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=True)
+                path = ydl.prepare_filename(info)
+                if not os.path.exists(path):
+                    stem, _ = os.path.splitext(path)
+                    for ext in _MEDIA_EXTS:
+                        if os.path.exists(stem + ext):
+                            path = stem + ext
+                            break
+            break
+        except Exception as exc:  # noqa: BLE001 — retry with next client
+            last_err = exc
+            print(f"[download] client '{client}' failed ({exc}); trying next…", flush=True)
+
+    if info is None or path is None:
+        hint = ""
+        if not using_cookies:
+            hint = (
+                "\nAll player clients were blocked (HTTP 403). Pass your browser cookies "
+                "to look authentic, e.g.:\n"
+                "  python main.py \"<url>\" --cookies-from-browser chrome\n"
+                "(also works: edge, firefox, brave; make sure you're signed in to YouTube)"
+            )
+        raise RuntimeError(f"download failed for {video_url}: {last_err}{hint}")
 
     _save_meta(path, info)
     print(f"[download] ready: {path}", flush=True)

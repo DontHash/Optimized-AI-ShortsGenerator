@@ -39,6 +39,41 @@ CAPTION_MAX_WORDS = int(os.getenv("CAPTION_MAX_WORDS", "3"))
 
 BOUNDARY_PAD_SECONDS = float(os.getenv("BOUNDARY_PAD_SECONDS", "0.3"))
 
+# --- Signal-fusion reranker (see UPLIFT_PLAN.md) ---
+# Weights per signal; missing signals drop out and remaining weights renormalize.
+_DEFAULT_WEIGHTS = {"llm": 0.45, "replay": 0.25, "audio": 0.20, "chapter": 0.10}
+
+
+def _parse_weights(raw: str) -> dict:
+    if not raw.strip():
+        return dict(_DEFAULT_WEIGHTS)
+    weights = dict(_DEFAULT_WEIGHTS)
+    for part in raw.split(","):
+        if ":" not in part:
+            continue
+        k, v = part.split(":", 1)
+        k = k.strip().lower()
+        try:
+            weights[k] = float(v)
+        except ValueError:
+            continue
+    return weights
+
+
+RERANK_WEIGHTS = _parse_weights(os.getenv("RERANK_WEIGHTS", ""))
+
+# Audio-energy scoring toggle (needs ffmpeg + numpy; both already required)
+AUDIO_ENERGY_ENABLED = os.getenv("AUDIO_ENERGY", "true").strip().lower() != "false"
+
+# Context-aware peak expansion (3.7): capture the setup that leads into a peak
+PEAK_LEAD_SECONDS = float(os.getenv("PEAK_LEAD_SECONDS", "5"))
+PEAK_LEAD_MAX_SECONDS = float(os.getenv("PEAK_LEAD_MAX_SECONDS", "20"))
+PEAK_TAIL_SECONDS = float(os.getenv("PEAK_TAIL_SECONDS", "5"))
+MAX_CLIP_SECONDS = float(os.getenv("MAX_CLIP_SECONDS", "180"))
+
+# Transcript-similarity dedupe: drop the lower-scoring of two near-identical clips
+DEDUPE_SIMILARITY = float(os.getenv("DEDUPE_SIMILARITY", "0.6"))
+
 
 def require_openai_key() -> str:
     if not OPENAI_API_KEY:

@@ -34,8 +34,10 @@ Each video lands in `output/<video_id>/`:
 
 ```
 output/<video_id>/
-  source_<id>.mp4      # cached download
-  source_<id>.srt      # cached transcript
+  source_<id>_max.mp4  # cached download (quality-tagged)
+  source_<id>_max.srt  # cached transcript
+  audio_energy.json    # cached loudness/spike/pause curve
+  heatmap.json         # YouTube "Most Replayed" graph (when available)
   clips.json           # the product
   1_slug.mp4           # only with --render
 ```
@@ -58,13 +60,24 @@ output/<video_id>/
       "start_hms": "00:02:04.3",
       "end_hms": "00:03:07.6",
       "score": 92,
+      "llm_score": 88,
       "hook_sentence": "...",
       "virality_reason": "...",
-      "transcript_excerpt": "..."
+      "transcript_excerpt": "...",
+      "context_expanded": true,
+      "signals": {
+        "llm": 0.91, "replay": 0.80, "audio": 0.55, "chapter": 1.0,
+        "final_score": 92.0, "signals_present": ["audio","chapter","llm","replay"]
+      }
     }
   ]
 }
 ```
+
+`score` is the **fused** 0–100 rank (LLM + replay + audio + chapter); `llm_score`
+keeps the raw model score, and `signals` shows exactly why each clip ranked where
+it did. On low-view videos with no heatmap/chapters, absent signals drop out and
+their weight redistributes — `score` then rests on LLM + audio only.
 
 Queue runs write `output/queue_report.json` (`ok` / `failed`). Existing `clips.json` is skipped unless `--force`.
 
@@ -101,14 +114,24 @@ Env knobs: `CAPTION_FONT`, `CAPTION_FONT_SIZE`, `CAPTION_HIGHLIGHT_COLOR`, `CAPT
 | `LOCAL_WHISPER_DEVICE` | `auto` | auto / cpu / cuda |
 | `LOCAL_OUTPUT_DIR` | `output` | Root output folder |
 | `DOWNLOAD_FORMAT` | `max` | `max` (uncapped) or 360 / 480 / 720 / 1080 |
+| `RERANK_WEIGHTS` | `llm:0.45,replay:0.25,audio:0.20,chapter:0.10` | Signal fusion weights |
+| `AUDIO_ENERGY` | `true` | Loudness/spike/pause scoring (ffmpeg+numpy) |
+| `PEAK_LEAD_SECONDS` / `PEAK_TAIL_SECONDS` | `5` / `5` | Context padding around replay peaks |
+| `DEDUPE_SIMILARITY` | `0.6` | Transcript-overlap threshold for near-duplicate clips |
 
 ## How it works
 
 1. Download (yt-dlp, cached) at max available quality by default (mp4-preferring merge)
 2. Transcribe (faster-whisper, SRT-cached)
-3. Rank highlights via LLM (virality framework: hooks, peaks, opinion bombs, …)
-4. Snap timestamps to sentence boundaries; attach transcript excerpts
-5. Write `clips.json` — optionally `--render` original-ratio cuts
+3. Gather signals: YouTube replay heatmap, chapters, audio energy, semantic boundaries
+4. Rank highlights via LLM (virality framework) — hinted with peaks/chapters/boundaries
+5. **Fuse** LLM + replay + audio + chapter into a calibrated score (rank-normalized per video)
+6. Expand peak clips to capture the setup (context) → peak → payoff
+7. Dedupe by time and transcript similarity; snap to sentence boundaries
+8. Write `clips.json` (+ `heatmap.json`) — optionally `--render` original-ratio cuts
+
+See `UPLIFT_PLAN.md` for the full design and the replay-holdout validation
+(`python -m eval.replay_holdout <urls>`).
 
 ## Project layout
 
@@ -117,11 +140,15 @@ main.py                 clip-finding CLI
 captions.py             captions CLI
 requirements.txt
 .env.example
+UPLIFT_PLAN.md          signal-fusion design + validation
+eval/replay_holdout.py  no-label ranking validation
 shorts_generator/
-  pipeline.py           find_clips()
+  pipeline.py           find_clips() — orchestrates signals + fusion
   queue.py              multi-URL + queue_report.json
+  signals.py            replay heatmap, chapters, audio energy, boundaries
+  rerank.py             weighted fusion, peak expansion, semantic dedupe
   highlights.py         LLM ranking + boundary snap
-  downloader.py         yt-dlp (YouTube only)
+  downloader.py         yt-dlp (YouTube only, signals in meta.json)
   transcriber.py        faster-whisper
   llm.py                OpenAI / Gemini
   clipper.py            ffmpeg cut (no crop)

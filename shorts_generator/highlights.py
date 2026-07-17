@@ -163,6 +163,7 @@ def call_highlight_api(
     num_clips: int,
     is_chunk: bool = False,
     llm_fn: LLMFn = call_llm,
+    hints: str = "",
 ) -> Dict:
     target = max(num_clips * 2, 5)
     natural_max = max(2 if is_chunk else 3, int(duration / 90))
@@ -173,7 +174,8 @@ def call_highlight_api(
         density=content_info.get("density", "medium"),
         num_clips_instruction=f"Generate at least {min_clips} highlights",
     )
-    base_prompt = f"{system}\n\nTranscript:\n{transcript_text}"
+    hint_block = f"\n\n{hints}" if hints else ""
+    base_prompt = f"{system}{hint_block}\n\nTranscript:\n{transcript_text}"
     prompt = base_prompt
     last_error = "unknown"
 
@@ -279,8 +281,15 @@ def get_highlights(
     num_clips: int = 3,
     llm_fn: Optional[LLMFn] = None,
     min_score: int = 0,
+    hints: str = "",
 ) -> Dict:
-    """Return {highlights: [...]} sorted by score, boundary-snapped, with excerpts."""
+    """Return {highlights: [...]} sorted by score, boundary-snapped, with excerpts.
+
+    `hints` (replay peaks / chapters / boundaries) is only injected on the
+    single-shot path — chunk transcripts are rebased to chunk-relative time, so
+    absolute-time hints would mislead the model there. Post-hoc signal fusion in
+    rerank.py still applies to chunked results.
+    """
     llm_fn = llm_fn or call_llm
     duration = transcript.get("duration", 0)
     segments = transcript.get("segments", [])
@@ -309,7 +318,9 @@ def get_highlights(
         highlights = dedupe_highlights(all_highlights)
     else:
         text = build_transcript_text(transcript)
-        result = call_highlight_api(text, content_info, duration, num_clips=num_clips, llm_fn=llm_fn)
+        result = call_highlight_api(
+            text, content_info, duration, num_clips=num_clips, llm_fn=llm_fn, hints=hints
+        )
         highlights = dedupe_highlights(result.get("highlights", []))
 
     highlights = snap_to_sentence_boundaries(highlights, segments)

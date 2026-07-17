@@ -1,13 +1,15 @@
-"""Clip-finding pipeline: download → transcribe → rank → clips.json (optional render)."""
+"""Clip-finding pipeline: download → transcribe → signals → rank → clips.json."""
 import json
 import os
 import re
 from typing import Dict, List, Optional
 
+from . import rerank
+from . import signals as sig
 from .clipper import render_clips
-from .config import DOWNLOAD_FORMAT, OUTPUT_DIR
+from .config import AUDIO_ENERGY_ENABLED, DOWNLOAD_FORMAT, OUTPUT_DIR
 from .downloader import download_youtube, extract_youtube_video_id, find_local_source
-from .highlights import get_highlights
+from .highlights import get_highlights, snap_to_sentence_boundaries, transcript_excerpt
 from .llm import call_llm
 from .transcriber import transcribe
 
@@ -39,7 +41,7 @@ def _build_clips_payload(
         start = float(h["start_time"])
         end = float(h["end_time"])
         title = str(h.get("title") or "Untitled")
-        clips.append({
+        clip = {
             "rank": rank,
             "name": _slugify(title),
             "title": title,
@@ -51,7 +53,14 @@ def _build_clips_payload(
             "hook_sentence": h.get("hook_sentence", ""),
             "virality_reason": h.get("virality_reason", ""),
             "transcript_excerpt": h.get("transcript_excerpt", ""),
-        })
+        }
+        if "llm_score" in h:
+            clip["llm_score"] = h["llm_score"]
+        if "signals" in h:
+            clip["signals"] = h["signals"]
+        if h.get("context_expanded"):
+            clip["context_expanded"] = True
+        clips.append(clip)
     return {
         "video_id": video_id,
         "video_title": video_title,
@@ -111,13 +120,53 @@ def find_clips(
     transcript = transcribe(source_path, language=language, cache_dir=video_dir)
     if not transcript["segments"]:
         raise RuntimeError("Whisper produced no segments. The video may have no detectable speech.")
+    segments = transcript["segments"]
 
+    # --- Signals (all degrade gracefully to None/empty) ---
+    heatmap = sig.normalize_heatmap(info.get("heatmap"))
+    chapters = sig.normalize_chapters(info.get("chapters"))
+    energy = None
+    if AUDIO_ENERGY_ENABLED:
+        energy = sig.compute_audio_energy(
+            source_path, cache_path=os.path.join(video_dir, "audio_energy.json")
+        )
+
+    if heatmap:
+        sig.write_heatmap_json(video_dir, heatmap)
+        peaks = sig.peak_windows(heatmap, top_n=3)
+        peak_str = ", ".join(sig.hms(p["start"]) for p in peaks)
+        print(f"[signals] replay {sig.sparkline(heatmap)}  peaks: {peak_str}", flush=True)
+    else:
+        print("[signals] no replay heatmap (low-view or unavailable)", flush=True)
+    print(
+        f"[signals] chapters={len(chapters)} "
+        f"audio_energy={'yes' if energy else 'no'}",
+        flush=True,
+    )
+
+    boundaries = sig.candidate_boundaries(segments, heatmap, energy)
+    hints = sig.build_hints(heatmap, chapters, boundaries, energy)
+
+    # LLM candidate generation (min_score deferred until after fusion)
     highlights_result = get_highlights(
-        transcript, num_clips=num_clips, llm_fn=call_llm, min_score=min_score
+        transcript, num_clips=num_clips, llm_fn=call_llm, min_score=0, hints=hints
     )
     all_highlights: List[Dict] = highlights_result.get("highlights", [])
     if not all_highlights:
         raise RuntimeError("Highlight generator returned zero clips.")
+
+    # --- Signal fusion → context expansion → dedupe → filter ---
+    ranked = rerank.fuse(all_highlights, heatmap, chapters, energy)
+    ranked = rerank.expand_for_context(ranked, segments, heatmap, energy)
+    ranked = snap_to_sentence_boundaries(ranked, segments)
+    ranked = rerank.dedupe_semantic(ranked)
+    for h in ranked:
+        h["transcript_excerpt"] = transcript_excerpt(
+            segments, float(h["start_time"]), float(h["end_time"])
+        )
+    if min_score > 0:
+        filtered = [h for h in ranked if int(h.get("score", 0)) >= min_score]
+        ranked = filtered or ranked[:1]  # never return empty if we had candidates
 
     duration = float(transcript.get("duration") or info.get("duration") or 0)
     payload = _build_clips_payload(
@@ -125,7 +174,7 @@ def find_clips(
         video_title=video_title,
         source_url=youtube_url,
         duration=duration,
-        highlights=all_highlights,
+        highlights=ranked,
         num_clips=num_clips,
     )
 

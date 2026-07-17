@@ -119,16 +119,43 @@ def _save_meta(source_path: str, info: Dict) -> None:
         "id": info.get("id"),
         "title": info.get("title"),
         "duration": info.get("duration"),
+        # Ranking signals (see UPLIFT_PLAN.md) — None on low-view videos
+        "heatmap": info.get("heatmap"),
+        "chapters": info.get("chapters"),
+        "_has_signals": True,  # sentinel: distinguishes "probed, none" from old cache
     }
     with open(_meta_path(source_path), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
 
-def _load_meta(source_path: str, video_id: str) -> Dict:
+def _probe_info(video_url: str, video_id: str) -> Dict:
+    """One lightweight metadata fetch (no download) for signals backfill."""
+    yt_dlp = _import_ytdlp()
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        try:
+            return ydl.extract_info(video_url, download=False)
+        except Exception:
+            return {"id": video_id, "title": video_id, "duration": 0}
+
+
+def _load_meta(source_path: str, video_id: str, video_url: Optional[str] = None) -> Dict:
     path = _meta_path(source_path)
     if os.path.isfile(path):
         with open(path, encoding="utf-8") as f:
             meta = json.load(f)
+        # Backfill signals for caches written before this feature
+        if not meta.get("_has_signals") and video_url:
+            info = _probe_info(video_url, video_id)
+            meta["heatmap"] = info.get("heatmap")
+            meta["chapters"] = info.get("chapters")
+            meta["_has_signals"] = True
+            meta.setdefault("duration", info.get("duration"))
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2)
+            except OSError:
+                pass
         if meta.get("id") or meta.get("title"):
             return meta
     return {"id": video_id, "title": video_id, "duration": 0}
@@ -214,7 +241,7 @@ def download_youtube(
     cached = find_local_source(out_dir, video_id, fmt=fmt)
     if cached:
         print(f"[download] already on disk, skipping download: {cached}", flush=True)
-        info = _load_meta(cached, video_id)
+        info = _load_meta(cached, video_id, video_url=video_url)
         return cached, info
 
     label = "max" if tag == "max" else f"{tag}p"

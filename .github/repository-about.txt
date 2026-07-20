@@ -1,17 +1,13 @@
-# Paste into GitHub → Settings → General → About (Description)
+# GitHub repo → Settings → General → About
+
+Description:
 ClipClipper — find ranked clip moments in long YouTube videos. Local yt-dlp, Whisper, and LLM fusion (replay, audio, chapters) → clips.json; optional ffmpeg cuts. No watermarks or clip credits.
 
-# Suggested topics (add in About → Topics)
-youtube
-python
-whisper
-yt-dlp
-openai
-gemini
-ffmpeg
-video-editing
-llm
-content-creation
+Homepage (optional):
+https://github.com/DontHash/Optimized-AI-ShortsGenerator
 
-# One-shot after: gh auth login
-# gh repo edit DontHash/Optimized-AI-ShortsGenerator --description "ClipClipper — find ranked clip moments in long YouTube videos. Local yt-dlp, Whisper, and LLM fusion (replay, audio, chapters) → clips.json; optional ffmpeg cuts. No watermarks or clip credits." --add-topic youtube --add-topic python --add-topic whisper --add-topic yt-dlp --add-topic openai --add-topic gemini --add-topic ffmpeg --add-topic video-editing --add-topic llm --add-topic content-creation
+Topics:
+youtube, python, whisper, yt-dlp, openai, gemini, ffmpeg, video-editing, llm, content-creation, clipclipper
+
+# Sync via CLI (logged-in as DontHash)
+gh repo edit DontHash/Optimized-AI-ShortsGenerator --description "ClipClipper — find ranked clip moments in long YouTube videos. Local yt-dlp, Whisper, and LLM fusion (replay, audio, chapters) → clips.json; optional ffmpeg cuts. No watermarks or clip credits." --homepage "https://github.com/DontHash/Optimized-AI-ShortsGenerator" --add-topic youtube --add-topic python --add-topic whisper --add-topic yt-dlp --add-topic openai --add-topic gemini --add-topic ffmpeg --add-topic video-editing --add-topic llm --add-topic content-creation --add-topic clipclipper

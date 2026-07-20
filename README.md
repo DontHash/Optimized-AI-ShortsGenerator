@@ -1,5 +1,22 @@
 # ClipClipper
 
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white" alt="Python 3.10+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/stack-yt--dlp%20%7C%20Whisper%20%7C%20OpenAI%20%2F%20Gemini-555" alt="Stack">
+  <img src="https://img.shields.io/badge/runs-local-first-2ea043" alt="Local-first">
+</p>
+
+<p align="center"><strong>Rank the best moments in long YouTube videos</strong> — fused LLM + replay + audio signals → <code>clips.json</code>, optional MP4 cuts.</p>
+
+<p align="center">
+  <a href="#requirements">Requirements</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#cli-reference">CLI</a> ·
+  <a href="#configuration">Config</a> ·
+  <a href="UPLIFT_PLAN.md">Design</a>
+</p>
+
 ## About
 
 **ClipClipper** is an open-source YouTube **clip-finding engine**: paste a long video URL and get a ranked [`clips.json`](#clipsjson-excerpt) with start/end times, titles, hooks, and scores you can explain (LLM + Most Replayed + audio energy + chapters, fused per video).
@@ -231,4 +248,4 @@ shorts_generator/
 
 ## License
 
-MIT — use and modify freely; attribution appreciated.
+[MIT](LICENSE) — use and modify freely; attribution appreciated.

@@ -10,4 +10,10 @@ output/.cookies_netscape.txt
 .DS_Store
 # Nested C# reference clone — download policy was ported into shorts_generator/downloader.py
 YoutubeDownloader/
+
+# graphify (local codebase maps — not shipped with ClipClipper)
 graphify-out/
+.graphify_*
+
+# Pipeline runs (clips.json, transcripts, etc.)
+output/

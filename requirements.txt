@@ -1,5 +1,5 @@
 python-dotenv>=1.0
-yt-dlp>=2024.1.1
+yt-dlp[default]>=2024.1.1
 faster-whisper>=1.0.0
 openai>=1.0.0
 google-genai>=1.0.0

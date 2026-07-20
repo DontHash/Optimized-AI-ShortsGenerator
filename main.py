@@ -1,5 +1,5 @@
 """CLI — find viral clips from one or more YouTube URLs.
-# python main.py "https://www.youtube.com/watch?v=2PA7fok3TFs" --num-clips 5  --format max --language en --render --accurate-cut --force
+# python main.py "https://www.youtube.com/watch?v=xmIKHROpeOY" --num-clips 5  --format max --language en --render --accurate-cut --force
 Usage:
     python main.py "https://www.youtube.com/watch?v=..."
     python main.py URL1 URL2 URL3 --num-clips 5

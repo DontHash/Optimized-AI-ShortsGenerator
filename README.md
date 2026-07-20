@@ -1,10 +1,12 @@
 # ClipClipper
 
-**Find the best moments in long YouTube videos** — ranked timestamps and metadata in `clips.json`, with optional original-ratio MP4 cuts and a separate captions tool.
+## About
 
-Built for editors and creators who want clip ideas backed by more than a single LLM guess: local transcription, YouTube replay data when available, audio energy, chapters, and fused scoring.
+**ClipClipper** is an open-source YouTube **clip-finding engine**: paste a long video URL and get a ranked [`clips.json`](#clipsjson-excerpt) with start/end times, titles, hooks, and scores you can explain (LLM + Most Replayed + audio energy + chapters, fused per video).
 
----
+The pipeline runs **locally** — `yt-dlp`, `faster-whisper`, and OpenAI or Gemini on your hardware. Optional ffmpeg cuts stay at **source aspect ratio** (no forced 9:16 crop, no clip SaaS API). A separate `captions.py` adds SRT/ASS or burn-in for editors.
+
+This repository ([`DontHash/Optimized-AI-ShortsGenerator`](https://github.com/DontHash/Optimized-AI-ShortsGenerator)) ships the reference CLI (`main.py`). Runtime artifacts live in gitignored `output/`; see [`.gitignore`](.gitignore).
 
 ## Features
 

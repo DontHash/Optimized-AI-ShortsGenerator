@@ -66,6 +66,16 @@ def _parse_json_loose(raw: str) -> Dict:
             raise
 
 
+def _num_field(obj: str, key: str) -> Optional[str]:
+    m = re.search(rf'"{key}"\s*:\s*(-?\d+(?:\.\d+)?)', obj)
+    return m.group(1) if m else None
+
+
+def _str_field(obj: str, key: str) -> str:
+    m = re.search(rf'"{key}"\s*:\s*"(.*?)"\s*(?:,|\}})', obj, re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
 def _salvage_highlights(raw: str) -> List[Dict]:
     """Regex-extract flat highlight objects when strict JSON parsing fails.
 
@@ -77,25 +87,17 @@ def _salvage_highlights(raw: str) -> List[Dict]:
     objects = re.findall(r"\{[^{}]*\}", raw, re.DOTALL)
     salvaged: List[Dict] = []
     for obj in objects:
-        def _num(key: str) -> Optional[str]:
-            m = re.search(rf'"{key}"\s*:\s*(-?\d+(?:\.\d+)?)', obj)
-            return m.group(1) if m else None
-
-        def _str(key: str) -> str:
-            m = re.search(rf'"{key}"\s*:\s*"(.*?)"\s*(?:,|\}})', obj, re.DOTALL)
-            return m.group(1).strip() if m else ""
-
-        start, end = _num("start_time"), _num("end_time")
+        start, end = _num_field(obj, "start_time"), _num_field(obj, "end_time")
         if start is None or end is None:
             continue
         salvaged.append(
             {
-                "title": _str("title") or "Untitled Highlight",
+                "title": _str_field(obj, "title") or "Untitled Highlight",
                 "start_time": start,
                 "end_time": end,
-                "score": _num("score") or 0,
-                "hook_sentence": _str("hook_sentence"),
-                "virality_reason": _str("virality_reason"),
+                "score": _num_field(obj, "score") or 0,
+                "hook_sentence": _str_field(obj, "hook_sentence"),
+                "virality_reason": _str_field(obj, "virality_reason"),
             }
         )
     return salvaged

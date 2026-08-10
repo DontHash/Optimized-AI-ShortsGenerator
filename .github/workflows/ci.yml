@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dev tools (no heavy runtime deps needed for unit tests)
+        run: pip install python-dotenv pytest ruff mypy
+
+      - name: Ruff
+        run: ruff check shorts_generator main.py captions.py eval tests
+
+      - name: Pytest
+        run: pytest
+
+      - name: Mypy (advisory, non-blocking)
+        run: mypy shorts_generator
+        continue-on-error: true

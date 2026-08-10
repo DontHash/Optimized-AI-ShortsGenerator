@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipclipper"
+version = "0.1.0"
+description = "Rank the best moments in long YouTube videos — fused LLM + replay + audio signals → clips.json, optional MP4 cuts."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "DontHash"}]
+keywords = ["youtube", "clip-finder", "whisper", "gemini", "shorts", "highlights"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Environment :: Console",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "python-dotenv>=1.0",
+    "yt-dlp[default]>=2024.1.1",
+    "faster-whisper>=1.0.0",
+    "openai>=1.0.0",
+    "google-genai>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10"]
+gpu = ["torch>=2.0"]
+
+[project.scripts]
+clipclipper = "main:main"
+
+[project.urls]
+Homepage = "https://github.com/DontHash/Optimized-AI-ShortsGenerator"
+
+[tool.setuptools]
+py-modules = ["main", "captions"]
+packages = ["shorts_generator", "eval"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["output", "graphify-out", "YoutubeDownloader", ".env"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# Respect the existing typing.Dict/List style (UP006/UP035/UP045 would churn every
+# annotation for no behavioral gain); the rest of UP stays active.
+ignore = ["E501", "B008", "UP006", "UP007", "UP035", "UP045", "UP022"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+exclude = "(output|graphify-out|YoutubeDownloader|build|dist)/"
+# Relaxed: this is a CLI app with dynamic config + optional heavy deps.
+# CI runs mypy as non-blocking advisory; fix real issues incrementally.
+warn_unused_ignores = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

@@ -390,4 +390,4 @@ def build_hints(
 
     if not lines:
         return ""
-    return "Signal hints (use as guidance, not gospel):\n" + "\n".join(f"- {l}" for l in lines)
+    return "Signal hints (use as guidance, not gospel):\n" + "\n".join(f"- {line}" for line in lines)

@@ -3,8 +3,9 @@
 <p align="center">
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/stack-yt--dlp%20%7C%20Whisper%20%7C%20OpenAI%20%2F%20Gemini-555" alt="Stack">
+  <img src="https://img.shields.io/badge/stack-yt--dlp%20%7C%20Whisper%20%7C%20Gemini%20%2F%20OpenAI-555" alt="Stack">
   <img src="https://img.shields.io/badge/runs-local-first-2ea043" alt="Local-first">
+  <img src="https://img.shields.io/badge/free--tier-ready-4c1" alt="Free-tier ready">
 </p>
 
 <p align="center"><strong>Rank the best moments in long YouTube videos</strong> — fused LLM + replay + audio signals → <code>clips.json</code>, optional MP4 cuts.</p>
@@ -12,6 +13,7 @@
 <p align="center">
   <a href="#requirements">Requirements</a> ·
   <a href="#quick-start">Quick start</a> ·
+  <a href="#free-to-run">Free to run</a> ·
   <a href="#cli-reference">CLI</a> ·
   <a href="#configuration">Config</a> ·
   <a href="docs/UPLIFT_PLAN.md">Design</a>
@@ -21,16 +23,16 @@
 
 **ClipClipper** is an open-source YouTube **clip-finding engine**: paste a long video URL and get a ranked [`clips.json`](#clipsjson-excerpt) with start/end times, titles, hooks, and scores you can explain (LLM + Most Replayed + audio energy + chapters, fused per video).
 
-The pipeline runs **locally** — `yt-dlp`, `faster-whisper`, and OpenAI or Gemini on your hardware. Optional ffmpeg cuts stay at **source aspect ratio** (no forced 9:16 crop, no clip SaaS API). A separate `captions.py` adds SRT/ASS or burn-in for editors.
-
-This repository ([`DontHash/Optimized-AI-ShortsGenerator`](https://github.com/DontHash/Optimized-AI-ShortsGenerator)) ships the reference CLI (`main.py`). Runtime artifacts live in gitignored `output/`; see [`.gitignore`](.gitignore).
+The pipeline runs **locally** — `yt-dlp`, `faster-whisper`, and Gemini (free tier) or OpenAI on your hardware. Optional ffmpeg cuts stay at **source aspect ratio** (no forced 9:16 crop, no clip SaaS API). A separate `captions.py` adds SRT/ASS or burn-in for editors.
 
 ## Features
 
 - **Ranked clip candidates** — start/end times, titles, hooks, virality notes, and per-signal scores
 - **Multi-signal fusion** — LLM ranking + Most Replayed heatmap + loudness/spikes + chapter hints (weights renormalize when a signal is missing)
-- **Local-first pipeline** — `yt-dlp` download, `faster-whisper` transcript, OpenAI or Gemini for highlights
-- **Caching** — re-runs reuse download, SRT, audio curve, and heatmap; skip completed videos unless `--force`
+- **Local-first pipeline** — `yt-dlp` download, `faster-whisper` transcript, Gemini or OpenAI for highlights
+- **Auto-captions shortcut** — uses YouTube's own captions when available, skipping Whisper entirely (faster, no GPU)
+- **SponsorBlock exclusion** — sponsor/intro/outro segments are fetched and clips landing inside them are dropped
+- **Caching** — re-runs reuse download, transcript, audio curve, and heatmap; skip completed videos unless `--force`
 - **Batch queue** — multiple URLs or a `.txt` file; summary in `output/queue_report.json`
 - **Optional render** — ffmpeg cuts at source aspect ratio (no vertical crop, no third-party video API)
 - **Captions helper** — SRT, karaoke ASS, optional burn-in via `captions.py`
@@ -41,7 +43,7 @@ This repository ([`DontHash/Optimized-AI-ShortsGenerator`](https://github.com/Do
 |------------|---------|
 | **Python 3.10+** | Runtime |
 | **[ffmpeg](https://ffmpeg.org/)** | Download merge, audio analysis, optional cuts and caption burn |
-| **API key** | `OPENAI_API_KEY` or `GEMINI_API_KEY` (see `.env.example`) |
+| **API key** | `GEMINI_API_KEY` (free tier — default) **or** `OPENAI_API_KEY` (see `.env.example`) |
 
 Install Python packages:
 
@@ -73,6 +75,19 @@ python main.py urls.txt --render
 # Frame-accurate cuts (slower re-encode)
 python main.py urls.txt --render --accurate-cut
 ```
+
+## Free to run
+
+ClipClipper is wired to cost $0 by default:
+
+1. **LLM_PROVIDER=gemini** is the out-of-the-box default — Gemini 2.5 Flash has a free tier generous enough for personal use. Set `OPENAI_API_KEY` + `LLM_PROVIDER=openai` only if you prefer it.
+2. **AUTO_SUBS=true** — when YouTube provides captions for a video, they are fetched and used directly; `faster-whisper` (the CPU/GPU-heavy step) is skipped entirely. Whisper remains the automatic fallback for videos without captions.
+3. **One LLM call per video** — content-type classification was folded into the highlight prompt, so short videos cost a single round-trip instead of two.
+4. **SponsorBlock** uses the free public `sponsor.ajay.app` API (no key) to keep ad-reads out of your clips.
+
+The only remaining cost is the highlight-ranking LLM call. On Gemini's free tier that is effectively free for tens of videos per day; everything else (download, transcription when auto-subs are missing, audio energy, fusion, cuts) runs on your machine with deps that ship in `requirements.txt`.
+
+To force local Whisper even when captions exist: `AUTO_SUBS=false`. To disable SponsorBlock: `SPONSORBLOCK=false`.
 
 ## Output
 
@@ -181,12 +196,15 @@ All knobs live in `.env`. Common settings:
 
 | Variable | Default | Notes |
 |----------|---------|--------|
-| `LLM_PROVIDER` | `openai` | `openai` or `gemini` |
+| `LLM_PROVIDER` | `gemini` | `gemini` (free tier, default) or `openai` |
 | `OPENAI_API_KEY` / `GEMINI_API_KEY` | — | Required for chosen provider |
 | `LOCAL_WHISPER_MODEL` | `base` | `tiny` → `large-v3` |
 | `LOCAL_WHISPER_DEVICE` | `auto` | `auto` / `cpu` / `cuda` |
 | `LOCAL_OUTPUT_DIR` | `output` | Output root |
 | `DOWNLOAD_FORMAT` | `max` | Same options as `--format` |
+| `AUTO_SUBS` | `true` | Use YouTube captions, skip Whisper when present |
+| `AUTO_SUBS_LANGS` | `en` | Comma list, e.g. `en,en-orig` |
+| `SPONSORBLOCK` | `true` | Exclude sponsor/intro/outro segments via sponsor.ajay.app |
 | `RERANK_WEIGHTS` | see `.env.example` | LLM / replay / audio / chapter fusion |
 | `AUDIO_ENERGY` | `true` | ffmpeg + numpy loudness scoring |
 | `PEAK_LEAD_SECONDS` / `PEAK_TAIL_SECONDS` | `5` / `5` | Context around replay peaks |
@@ -199,21 +217,21 @@ Full list and defaults: [`.env.example`](.env.example).
 ```mermaid
 flowchart LR
   A[YouTube URL] --> B[yt-dlp download]
-  B --> C[faster-whisper]
+  B --> C[auto-caps / faster-whisper]
   C --> D[Signals]
   D --> E[LLM highlights]
-  E --> F[Fusion + dedupe]
+  E --> F[Fusion + dedupe + sponsor filter]
   F --> G[clips.json]
   G --> H[Optional ffmpeg cut]
 ```
 
-1. Download (cached) — max quality by default, MP4-preferred merge  
-2. Transcribe to SRT (cached)  
-3. Collect replay heatmap, chapters, audio energy, semantic boundaries  
-4. LLM ranks candidate moments (hinted by peaks and structure)  
-5. Fuse signals into a calibrated per-video score; expand peaks for setup → payoff  
-6. Dedupe by time and transcript similarity; snap to sentence boundaries  
-7. Write `clips.json` (+ sidecar JSON); optionally `--render` cuts  
+1. Download (cached) — max quality by default, MP4-preferred merge
+2. Transcribe (cached) — YouTube auto-captions when available, else faster-whisper
+3. Collect replay heatmap, chapters, audio energy, semantic boundaries, SponsorBlock segments
+4. LLM ranks candidate moments (hinted by peaks and structure; classifies content in the same call)
+5. Fuse signals into a calibrated per-video score; expand peaks for setup → payoff
+6. Dedupe by time and transcript similarity; drop clips inside sponsor segments; snap to sentence boundaries
+7. Write `clips.json` (+ sidecar JSON); optionally `--render` cuts
 
 Design notes and validation: [`docs/UPLIFT_PLAN.md`](docs/UPLIFT_PLAN.md). Replay holdout eval:
 

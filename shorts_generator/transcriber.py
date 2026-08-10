@@ -51,8 +51,9 @@ def _write_srt(path: Path, transcript: Dict) -> Path:
     return path
 
 
-def _load_srt_cache(cache_path: Path) -> Dict:
-    content = cache_path.read_text(encoding="utf-8-sig").strip()
+def load_srt_file(path: Path) -> Dict:
+    """Parse an SRT file into {duration, segments}. Empty-safe."""
+    content = path.read_text(encoding="utf-8-sig").strip()
     if not content:
         return {"duration": 0.0, "segments": []}
 
@@ -111,8 +112,9 @@ def transcribe(
     language: Optional[str] = None,
     word_timestamps: bool = False,
     cache_dir: Optional[str] = None,
+    auto_subs_path: Optional[str] = None,
 ) -> Dict:
-    """Run faster-whisper. Returns {duration, segments[, words]}."""
+    """Run faster-whisper (or reuse YouTube auto-captions). Returns {duration, segments[, words]}."""
     if cache_dir:
         cache_path = Path(cache_dir) / (
             Path(media_path).stem + (".words.srt" if word_timestamps else ".srt")
@@ -124,7 +126,7 @@ def transcribe(
         source_mtime = os.path.getmtime(media_path)
         if cache_path.stat().st_mtime >= source_mtime:
             print(f"[transcribe] reusing cached transcript: {cache_path}", flush=True)
-            cached = _load_srt_cache(cache_path)
+            cached = load_srt_file(cache_path)
             if cached["segments"] and cached["duration"] > 0.0:
                 print(
                     f"[transcribe] {len(cached['segments'])} cached segments, "
@@ -133,6 +135,20 @@ def transcribe(
                 )
                 return cached
             cache_path.unlink(missing_ok=True)
+
+    if not word_timestamps and auto_subs_path and os.path.isfile(auto_subs_path):
+        try:
+            subs = load_srt_file(Path(auto_subs_path))
+        except (OSError, ValueError):
+            subs = {"duration": 0.0, "segments": []}
+        if subs["segments"] and subs["duration"] > 0.0:
+            _write_srt(cache_path, subs)
+            print(
+                f"[transcribe] using YouTube auto-captions (no Whisper): {auto_subs_path} "
+                f"({len(subs['segments'])} segments, {subs['duration']:.0f}s)",
+                flush=True,
+            )
+            return subs
 
     model = _load_model()
     kwargs = {

@@ -9,7 +9,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+# Free-first default: Gemini has a free tier; OpenAI does not.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
 
 LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "base")
 LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "auto")  # auto / cpu / cuda
@@ -105,6 +106,15 @@ MAX_CLIP_SECONDS = float(os.getenv("MAX_CLIP_SECONDS", "180"))
 
 # Transcript-similarity dedupe: drop the lower-scoring of two near-identical clips
 DEDUPE_SIMILARITY = float(os.getenv("DEDUPE_SIMILARITY", "0.6"))
+
+# Free path: use YouTube auto-captions when available, skip local Whisper entirely
+AUTO_SUBS_ENABLED = os.getenv("AUTO_SUBS", "true").strip().lower() != "false"
+AUTO_SUBS_LANGS = [
+    c.strip() for c in os.getenv("AUTO_SUBS_LANGS", "en").split(",") if c.strip()
+]
+
+# SponsorBlock: exclude sponsor/intro/outro segments from ranked clips
+SPONSORBLOCK_ENABLED = os.getenv("SPONSORBLOCK", "true").strip().lower() != "false"
 
 
 def require_openai_key() -> str:

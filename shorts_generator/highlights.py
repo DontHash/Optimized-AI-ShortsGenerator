@@ -8,11 +8,6 @@ from .llm import call_llm
 
 LLMFn = Callable[[str], str]
 
-CONTENT_TYPE_PROMPT = """Analyze this video transcript sample and classify the content type.
-Choose one: podcast, interview, tutorial, lecture, commentary, debate, vlog, other.
-Also estimate content density: low (mostly filler/chit-chat), medium, or high (dense info/stories).
-Respond with JSON only: {"content_type": "...", "density": "..."}"""
-
 VIRALITY_CRITERIA = """
 Virality signals to prioritize (ranked by impact):
 1. HOOK MOMENTS — statements that create immediate curiosity ("The secret is...", "Nobody talks about...", "I was completely wrong about...")
@@ -29,11 +24,10 @@ HIGHLIGHT_SYSTEM_PROMPT = """You are an elite short-form video editor who has st
 
 {virality_criteria}
 
-Content type: {content_type} | Density: {density}
-
 Your task: identify the most viral-worthy highlights from the transcript.
 
 Rules:
+- Classify the video: content_type (one of podcast, interview, tutorial, lecture, commentary, debate, vlog, other) and density (low = mostly filler/chit-chat, medium, high = dense info/stories)
 - Every highlight must open with a strong HOOK — a line that grabs attention within the first 3 seconds
 - Duration sweet spot: 45-90 seconds. Go shorter (20-44s) only for a perfect standalone one-liner. Go longer (91-180s) only when a story arc needs full context to land
 - Never cut mid-sentence or mid-thought — each clip must feel complete and self-contained
@@ -41,10 +35,10 @@ Rules:
 - Score 0-100 on viral potential (not general quality)
 - {num_clips_instruction}
 - For each highlight, identify the single best "hook_sentence" — the opening line that would make someone stop scrolling
-- Explain in one sentence why this clip is viral ("virality_reason")
+- Explain in one sentence why this clip is viral ("virality_reason"){classification}
 
 Respond ONLY with valid JSON (no markdown, no explanation):
-{{"highlights":[{{"title":"string","start_time":float,"end_time":float,"score":int,"hook_sentence":"string","virality_reason":"string"}}]}}"""
+{{"content_type":"string","density":"string","highlights":[{{"title":"string","start_time":float,"end_time":float,"score":int,"hook_sentence":"string","virality_reason":"string"}}]}}"""
 
 CHUNK_SIZE_SECONDS = 1200
 LONG_VIDEO_THRESHOLD = 1800
@@ -106,16 +100,21 @@ def _salvage_highlights(raw: str) -> List[Dict]:
     return salvaged
 
 
-def _extract_highlights(raw: str, duration: float) -> List[Dict]:
-    """Strict parse first, then regex salvage — returns sanitized highlights."""
+def _extract_highlights(raw: str, duration: float) -> Dict:
+    """Strict parse first, then regex salvage. Returns {highlights, content_type, density}."""
     try:
         parsed = _parse_json_loose(raw)
         highlights = _sanitize_highlights(parsed.get("highlights"), duration=duration)
         if highlights:
-            return highlights
+            return {
+                "highlights": highlights,
+                "content_type": str(parsed.get("content_type") or "other"),
+                "density": str(parsed.get("density") or "medium"),
+            }
     except Exception:
         pass
-    return _sanitize_highlights(_salvage_highlights(raw), duration=duration)
+    salvaged = _sanitize_highlights(_salvage_highlights(raw), duration=duration)
+    return {"highlights": salvaged, "content_type": "other", "density": "medium"}
 
 
 def _coerce_float(value: object, default: float = 0.0) -> float:
@@ -166,16 +165,6 @@ def _sanitize_highlights(raw_highlights: object, duration: float) -> List[Dict]:
     return cleaned
 
 
-def detect_content_type(transcript: Dict, llm_fn: LLMFn = call_llm) -> Dict[str, str]:
-    segments = transcript.get("segments", [])
-    sample = " ".join(s["text"] for s in segments[:25])[:3000]
-    prompt = f"{CONTENT_TYPE_PROMPT}\n\nTranscript sample:\n{sample}"
-    try:
-        return _parse_json_loose(llm_fn(prompt))
-    except Exception:
-        return {"content_type": "other", "density": "medium"}
-
-
 def build_transcript_text(transcript: Dict) -> str:
     segments = transcript.get("segments", [])
     return "\n".join(f"[{s['start']:.1f}s] {s['text'].strip()}" for s in segments)
@@ -210,20 +199,26 @@ def chunk_transcript(transcript: Dict) -> List[Dict]:
 
 def call_highlight_llm(
     transcript_text: str,
-    content_info: Dict,
     duration: float,
     num_clips: int,
     is_chunk: bool = False,
     llm_fn: LLMFn = call_llm,
     hints: str = "",
+    content_info: Optional[Dict] = None,
 ) -> Dict:
     target = max(num_clips * 2, 5)
     natural_max = max(2 if is_chunk else 3, int(duration / 90))
     min_clips = min(target, natural_max, 8)
+    classification = ""
+    if content_info:
+        classification = (
+            f"\n- Already classified for this video — reuse, do not re-derive: "
+            f"content_type={content_info.get('content_type', 'other')}, "
+            f"density={content_info.get('density', 'medium')}"
+        )
     system = HIGHLIGHT_SYSTEM_PROMPT.format(
         virality_criteria=VIRALITY_CRITERIA,
-        content_type=content_info.get("content_type", "other"),
-        density=content_info.get("density", "medium"),
+        classification=classification,
         num_clips_instruction=f"Generate at least {min_clips} highlights",
     )
     hint_block = f"\n\n{hints}" if hints else ""
@@ -234,9 +229,9 @@ def call_highlight_llm(
     for attempt in range(1, MAX_HIGHLIGHT_ATTEMPTS + 1):
         raw = llm_fn(prompt)
         try:
-            highlights = _extract_highlights(raw, duration=duration)
-            if highlights:
-                return {"highlights": highlights}
+            result = _extract_highlights(raw, duration=duration)
+            if result["highlights"]:
+                return result
             last_error = "no valid highlights in response"
         except Exception as e:
             last_error = str(e)
@@ -336,41 +331,54 @@ def get_highlights(
 ) -> Dict:
     """Return {highlights: [...]} sorted by score, boundary-snapped, with excerpts.
 
-    `hints` (replay peaks / chapters / boundaries) is only injected on the
-    single-shot path — chunk transcripts are rebased to chunk-relative time, so
+    Content-type classification is folded into the highlight LLM call (one round-trip
+    instead of two). `hints` (replay peaks / chapters / boundaries) is only injected on
+    the single-shot path — chunk transcripts are rebased to chunk-relative time, so
     absolute-time hints would mislead the model there. Post-hoc signal fusion in
     rerank.py still applies to chunked results.
     """
     llm_fn = llm_fn or call_llm
     duration = transcript.get("duration", 0)
     segments = transcript.get("segments", [])
-    content_info = detect_content_type(transcript, llm_fn=llm_fn)
-    print(
-        f"[highlights] content={content_info.get('content_type')} "
-        f"density={content_info.get('density')} duration={duration:.0f}s",
-        flush=True,
-    )
 
     if duration >= LONG_VIDEO_THRESHOLD:
         chunks = chunk_transcript(transcript)
         print(f"[highlights] long video — splitting into {len(chunks)} chunks", flush=True)
         all_highlights: List[Dict] = []
+        content_info: Optional[Dict] = None
         for i, chunk in enumerate(chunks):
             offset = chunk.get("_offset", 0)
             text = build_transcript_text(chunk)
             print(f"[highlights] chunk {i + 1}/{len(chunks)} (offset {offset:.0f}s)", flush=True)
             result = call_highlight_llm(
-                text, content_info, chunk["duration"], num_clips=num_clips, is_chunk=True, llm_fn=llm_fn
+                text, chunk["duration"], num_clips=num_clips, is_chunk=True,
+                llm_fn=llm_fn, content_info=content_info,
             )
+            if content_info is None:
+                content_info = {
+                    "content_type": result.get("content_type", "other"),
+                    "density": result.get("density", "medium"),
+                }
             for h in result.get("highlights", []):
                 h["start_time"] = float(h["start_time"]) + offset
                 h["end_time"] = float(h["end_time"]) + offset
                 all_highlights.append(h)
+        content_info = content_info or {}
+        print(
+            f"[highlights] content={content_info.get('content_type')} "
+            f"density={content_info.get('density')} duration={duration:.0f}s",
+            flush=True,
+        )
         highlights = dedupe_highlights(all_highlights)
     else:
         text = build_transcript_text(transcript)
         result = call_highlight_llm(
-            text, content_info, duration, num_clips=num_clips, llm_fn=llm_fn, hints=hints
+            text, duration, num_clips=num_clips, llm_fn=llm_fn, hints=hints
+        )
+        print(
+            f"[highlights] content={result.get('content_type', 'other')} "
+            f"density={result.get('density', 'medium')} duration={duration:.0f}s",
+            flush=True,
         )
         highlights = dedupe_highlights(result.get("highlights", []))
 

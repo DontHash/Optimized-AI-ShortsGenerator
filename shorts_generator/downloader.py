@@ -6,7 +6,7 @@ uncapped best video+audio by default, prefer mp4/m4a when available, ffmpeg merg
 import json
 import os
 import re
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from .config import DOWNLOAD_FORMAT, OUTPUT_DIR, YTDLP_COOKIES_FILE, YTDLP_COOKIES_FROM_BROWSER, _env
@@ -493,3 +493,87 @@ def download_youtube(
             flush=True,
         )
     return path, info
+
+
+def fetch_auto_subs(
+    video_url: str,
+    out_dir: str,
+    video_id: str,
+    language: Optional[str] = None,
+    langs: Optional[List[str]] = None,
+) -> Optional[str]:
+    """Fetch YouTube (auto)captions without downloading the video. SRT path or None.
+
+    The file is cached on disk under ``source_<id>_auto.*.srt``, so re-runs
+    skip the network call. Returns None on any failure (caller falls back to
+    faster-whisper).
+    """
+    prefix = f"source_{video_id}_auto"
+    os.makedirs(out_dir, exist_ok=True)
+    for name in sorted(os.listdir(out_dir)):
+        if name.startswith(prefix) and name.endswith((".srt", ".vtt")):
+            return os.path.join(out_dir, name)
+
+    langs = langs or [language or "en"]
+    yt_dlp = _import_ytdlp()
+    opts: Dict = {
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": [c.strip() for c in langs if c.strip()] or ["en"],
+        "subtitlesformat": "srt",
+        "convert_subs": ["srt"],
+        "outtmpl": os.path.join(out_dir, prefix + ".%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "http_headers": {"User-Agent": _USER_AGENT},
+    }
+    opts.update(_auth_opts())
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(video_url, download=True)
+    except Exception:
+        return None
+
+    for name in sorted(os.listdir(out_dir)):
+        if name.startswith(prefix) and name.endswith((".srt", ".vtt")):
+            return os.path.join(out_dir, name)
+    return None
+
+
+def fetch_sponsor_segments(video_id: str) -> List[Dict]:
+    """SponsorBlock segments (sponsor/intro/outro/selfpromo) for a video. [] on any failure.
+
+    Free public API (sponsor.ajay.app), no key. A 404 means the video has no
+    segments, which is the common case.
+    """
+    import urllib.parse
+    import urllib.request
+
+    if not video_id:
+        return []
+    params = urllib.parse.urlencode(
+        {
+            "videoID": video_id,
+            "categories": '["sponsor","selfpromo","intro","outro"]',
+        }
+    )
+    url = "https://sponsor.ajay.app/api/skipSegments?" + params
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+    segments = []
+    for s in data if isinstance(data, list) else []:
+        try:
+            start = float(s["startTime"])
+            end = float(s["endTime"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end > start:
+            segments.append({"start": start, "end": end})
+    segments.sort(key=lambda x: x["start"])
+    return segments

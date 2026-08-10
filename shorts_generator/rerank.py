@@ -207,3 +207,27 @@ def dedupe_semantic(clips: List[Dict], threshold: float = DEDUPE_SIMILARITY) -> 
         kept.append(c)
         kept_words.append(words)
     return kept
+
+
+def filter_sponsor_overlaps(
+    clips: List[Dict],
+    sponsor_segments: List[Dict],
+    max_overlap: float = 0.5,
+) -> List[Dict]:
+    """Drop clips whose window overlaps sponsor/intro segments for more than `max_overlap` of their duration."""
+    if not sponsor_segments or not clips:
+        return clips
+
+    def overlap_ratio(clip: Dict) -> float:
+        start = float(clip["start_time"])
+        end = float(clip["end_time"])
+        dur = max(1e-6, end - start)
+        total = 0.0
+        for s in sponsor_segments:
+            lo = max(start, float(s["start"]))
+            hi = min(end, float(s["end"]))
+            if hi > lo:
+                total += hi - lo
+        return total / dur
+
+    return [c for c in clips if overlap_ratio(c) < max_overlap]

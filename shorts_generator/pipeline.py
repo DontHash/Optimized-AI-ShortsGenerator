@@ -7,8 +7,21 @@ from typing import Dict, List, Optional
 from . import rerank
 from . import signals as sig
 from .clipper import render_clips
-from .config import AUDIO_ENERGY_ENABLED, DOWNLOAD_FORMAT, OUTPUT_DIR
-from .downloader import download_youtube, extract_youtube_video_id, find_local_source
+from .config import (
+    AUDIO_ENERGY_ENABLED,
+    AUTO_SUBS_ENABLED,
+    AUTO_SUBS_LANGS,
+    DOWNLOAD_FORMAT,
+    OUTPUT_DIR,
+    SPONSORBLOCK_ENABLED,
+)
+from .downloader import (
+    download_youtube,
+    extract_youtube_video_id,
+    fetch_auto_subs,
+    fetch_sponsor_segments,
+    find_local_source,
+)
 from .highlights import get_highlights, snap_to_sentence_boundaries, transcript_excerpt
 from .llm import call_llm
 from .transcriber import transcribe
@@ -116,8 +129,22 @@ def find_clips(
     source_path, info = download_youtube(youtube_url, fmt=fmt, out_dir=video_dir)
     video_title = str(info.get("title") or video_id)
 
-    # Put transcript cache next to the source so re-runs stay cheap
-    transcript = transcribe(source_path, language=language, cache_dir=video_dir)
+    # Put transcript cache next to the source so re-runs stay cheap.
+    # Free path: fetch YouTube auto-captions; fall back to faster-whisper if absent.
+    auto_subs_path = None
+    if AUTO_SUBS_ENABLED:
+        sub_langs = [language] if language else AUTO_SUBS_LANGS
+        auto_subs_path = fetch_auto_subs(
+            youtube_url, video_dir, video_id, language=language, langs=sub_langs
+        )
+        if not auto_subs_path:
+            print("[transcribe] no YouTube auto-captions found; falling back to faster-whisper", flush=True)
+    transcript = transcribe(
+        source_path,
+        language=language,
+        cache_dir=video_dir,
+        auto_subs_path=auto_subs_path,
+    )
     if not transcript["segments"]:
         raise RuntimeError("Whisper produced no segments. The video may have no detectable speech.")
     segments = transcript["segments"]
@@ -160,6 +187,18 @@ def find_clips(
     ranked = rerank.expand_for_context(ranked, segments, heatmap, energy)
     ranked = snap_to_sentence_boundaries(ranked, segments)
     ranked = rerank.dedupe_semantic(ranked)
+    if SPONSORBLOCK_ENABLED:
+        sponsor_segments = fetch_sponsor_segments(video_id)
+        if sponsor_segments:
+            before = len(ranked)
+            ranked = rerank.filter_sponsor_overlaps(ranked, sponsor_segments)
+            dropped = before - len(ranked)
+            if dropped:
+                print(
+                    f"[signals] SponsorBlock: dropped {dropped} clip(s) overlapping "
+                    f"{len(sponsor_segments)} sponsor/intro segment(s)",
+                    flush=True,
+                )
     for h in ranked:
         h["transcript_excerpt"] = transcript_excerpt(
             segments, float(h["start_time"]), float(h["end_time"])

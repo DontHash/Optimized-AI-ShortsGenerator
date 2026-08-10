@@ -116,6 +116,11 @@ AUTO_SUBS_LANGS = [
 # SponsorBlock: exclude sponsor/intro/outro segments from ranked clips
 SPONSORBLOCK_ENABLED = os.getenv("SPONSORBLOCK", "true").strip().lower() != "false"
 
+# LLM resilience: retry transient errors with exponential backoff, then optionally
+# fall back to the other configured provider.
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+LLM_FALLBACK_ENABLED = os.getenv("LLM_FALLBACK", "true").strip().lower() != "false"
+
 
 def require_openai_key() -> str:
     if not OPENAI_API_KEY:

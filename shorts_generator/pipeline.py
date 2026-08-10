@@ -172,11 +172,20 @@ def find_clips(
     )
 
     boundaries = sig.candidate_boundaries(segments, heatmap, energy)
-    hints = sig.build_hints(heatmap, chapters, boundaries, energy)
 
-    # LLM candidate generation (min_score deferred until after fusion)
+    # LLM candidate generation (min_score deferred until after fusion).
+    # Pass raw signals so get_highlights can build chunk-relative hints for long videos.
     highlights_result = get_highlights(
-        transcript, num_clips=num_clips, llm_fn=call_llm, min_score=0, hints=hints
+        transcript,
+        num_clips=num_clips,
+        llm_fn=call_llm,
+        min_score=0,
+        signals={
+            "heatmap": heatmap,
+            "chapters": chapters,
+            "boundaries": boundaries,
+            "energy": energy,
+        },
     )
     all_highlights: List[Dict] = highlights_result.get("highlights", [])
     if not all_highlights:

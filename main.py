@@ -13,9 +13,6 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from shorts_generator.config import DOWNLOAD_FORMAT
-from shorts_generator.queue import load_urls, process_queue
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -35,8 +32,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--format",
-        default=DOWNLOAD_FORMAT,
-        help=f"Download quality: max (uncapped) | 360 / 480 / 720 / 1080 (default: {DOWNLOAD_FORMAT})",
+        default=None,
+        help="Download quality: max (uncapped) | 360 / 480 / 720 / 1080 (default: from .env DOWNLOAD_FORMAT)",
     )
     parser.add_argument("--language", default=None, help="Force Whisper language, e.g. 'en'")
     parser.add_argument(
@@ -73,6 +70,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Apply cookie overrides BEFORE importing shorts_generator so config.py's
+    # load_dotenv() + env reads see the final values (no stale module-level state).
     import os
     if args.no_browser_cookies:
         os.environ["YTDLP_COOKIES_FROM_BROWSER"] = "none"
@@ -80,6 +79,9 @@ def main() -> int:
         os.environ["YTDLP_COOKIES_FROM_BROWSER"] = args.cookies_from_browser
     if args.cookies:
         os.environ["YTDLP_COOKIES_FILE"] = args.cookies
+
+    from shorts_generator.config import DOWNLOAD_FORMAT
+    from shorts_generator.queue import load_urls, process_queue
 
     urls = load_urls(args.urls)
     if not urls:
@@ -89,7 +91,7 @@ def main() -> int:
     report = process_queue(
         urls,
         num_clips=args.num_clips,
-        download_format=args.format,
+        download_format=args.format or DOWNLOAD_FORMAT,
         language=args.language,
         min_score=args.min_score,
         render=args.render,

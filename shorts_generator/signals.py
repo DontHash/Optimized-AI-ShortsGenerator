@@ -244,7 +244,7 @@ def compute_audio_energy(
 
 
 def audio_score(energy: Optional[Dict], start: float, end: float) -> Optional[float]:
-    """Mean energy over the window + a bonus for spikes inside it. None if no energy."""
+    """0.7 * mean energy + 0.3 * spike density. Bounded [0,1]. None if no energy."""
     if not energy:
         return None
     values = energy.get("values") or []
@@ -257,8 +257,8 @@ def audio_score(energy: Optional[Dict], start: float, end: float) -> Optional[fl
     window = values[lo:hi]
     base = sum(window) / len(window)
     spikes_in = sum(1 for s in energy.get("spikes", []) if lo <= s < hi)
-    bonus = min(0.3, 0.1 * spikes_in)
-    return min(1.0, 0.7 * base + bonus + (0.3 if spikes_in else 0.0) * base)
+    spike_bonus = min(1.0, spikes_in / 3.0)
+    return min(1.0, 0.7 * base + 0.3 * spike_bonus)
 
 
 def tone_onset(energy: Optional[Dict], peak_time: float, floor_time: float) -> Optional[float]:
@@ -339,32 +339,54 @@ def build_hints(
     boundaries: List[float],
     energy: Optional[Dict],
     max_items: int = 6,
+    offset: float = 0.0,
+    window: Optional[Tuple[float, float]] = None,
 ) -> str:
+    """Build the LLM hint block.
+
+    With ``offset`` and ``window=(start, end)`` (absolute times), signals are
+    filtered to the window and rebased to chunk-relative time so they line up
+    with a chunked transcript whose timestamps start at 0.
+    """
+    lo = float(window[0]) if window else 0.0
+    hi = float(window[1]) if window else float("inf")
+
+    def _in(t: float) -> bool:
+        return lo <= t < hi
+
+    def _rebase(t: float) -> float:
+        return max(0.0, t - offset)
+
     lines: List[str] = []
 
-    peaks = peak_windows(heatmap, top_n=max_items)
+    peaks = [p for p in peak_windows(heatmap, top_n=max_items * 2) if _in(p["start"])]
     if peaks:
-        spans = ", ".join(f"{hms(p['start'])}-{hms(p['end'])}" for p in peaks)
+        spans = ", ".join(f"{hms(_rebase(p['start']))}-{hms(_rebase(p['end']))}" for p in peaks[:max_items])
         lines.append(
             "Audience replay peaks (YouTube Most Replayed) — moments overlapping these "
             f"are proven rewatch-worthy, look closely here: {spans}"
         )
 
     if chapters:
-        chap = " | ".join(f"{hms(c['start'])} {c['title']}" for c in chapters[:max_items] if c["title"])
-        if chap:
+        chap_items = [c for c in chapters if c["title"] and _in(c["start"])]
+        if chap_items:
+            chap = " | ".join(f"{hms(_rebase(c['start']))} {c['title']}" for c in chap_items[:max_items])
             lines.append(f"Creator chapters (editorial table of contents): {chap}")
 
     if energy and energy.get("spikes"):
-        spikes = ", ".join(hms(float(s)) for s in energy["spikes"][:max_items])
-        lines.append(f"Loud/emotional audio moments (laughter, shouting, applause): {spikes}")
+        spikes = [float(s) for s in energy["spikes"] if _in(float(s))]
+        if spikes:
+            spikes_str = ", ".join(hms(_rebase(s)) for s in spikes[:max_items])
+            lines.append(f"Loud/emotional audio moments (laughter, shouting, applause): {spikes_str}")
 
     if boundaries:
-        bounds = ", ".join(hms(b) for b in boundaries[:max_items])
-        lines.append(
-            f"Natural clip boundaries (pauses / topic shifts) — start and end clips near these, "
-            f"never mid-thought: {bounds}"
-        )
+        bounds = [b for b in boundaries if _in(b)]
+        if bounds:
+            bounds_str = ", ".join(hms(_rebase(b)) for b in bounds[:max_items])
+            lines.append(
+                f"Natural clip boundaries (pauses / topic shifts) — start and end clips near these, "
+                f"never mid-thought: {bounds_str}"
+            )
 
     if not lines:
         return ""

@@ -3,6 +3,7 @@ import json
 import re
 from typing import Callable, Dict, List, Optional
 
+from . import signals as sig
 from .config import BOUNDARY_PAD_SECONDS
 from .llm import call_llm
 
@@ -328,18 +329,31 @@ def get_highlights(
     llm_fn: Optional[LLMFn] = None,
     min_score: int = 0,
     hints: str = "",
+    signals: Optional[Dict] = None,
 ) -> Dict:
     """Return {highlights: [...]} sorted by score, boundary-snapped, with excerpts.
 
     Content-type classification is folded into the highlight LLM call (one round-trip
-    instead of two). `hints` (replay peaks / chapters / boundaries) is only injected on
-    the single-shot path — chunk transcripts are rebased to chunk-relative time, so
-    absolute-time hints would mislead the model there. Post-hoc signal fusion in
-    rerank.py still applies to chunked results.
+    instead of two). When ``signals`` is provided (heatmap/chapters/boundaries/energy),
+    per-chunk hints are built with chunk-relative timestamps so long videos get the
+    same replay/chapter/boundary hints as short ones. Otherwise the caller-supplied
+    ``hints`` string is used on the single-shot path only.
     """
     llm_fn = llm_fn or call_llm
     duration = transcript.get("duration", 0)
     segments = transcript.get("segments", [])
+
+    def _hints_for(offset: float, end: float) -> str:
+        if signals is None:
+            return hints
+        return sig.build_hints(
+            signals.get("heatmap") or [],
+            signals.get("chapters") or [],
+            signals.get("boundaries") or [],
+            signals.get("energy"),
+            offset=offset,
+            window=(offset, end),
+        )
 
     if duration >= LONG_VIDEO_THRESHOLD:
         chunks = chunk_transcript(transcript)
@@ -349,10 +363,11 @@ def get_highlights(
         for i, chunk in enumerate(chunks):
             offset = chunk.get("_offset", 0)
             text = build_transcript_text(chunk)
+            ch_hints = _hints_for(offset, offset + chunk["duration"])
             print(f"[highlights] chunk {i + 1}/{len(chunks)} (offset {offset:.0f}s)", flush=True)
             result = call_highlight_llm(
                 text, chunk["duration"], num_clips=num_clips, is_chunk=True,
-                llm_fn=llm_fn, content_info=content_info,
+                llm_fn=llm_fn, hints=ch_hints, content_info=content_info,
             )
             if content_info is None:
                 content_info = {
@@ -373,7 +388,7 @@ def get_highlights(
     else:
         text = build_transcript_text(transcript)
         result = call_highlight_llm(
-            text, duration, num_clips=num_clips, llm_fn=llm_fn, hints=hints
+            text, duration, num_clips=num_clips, llm_fn=llm_fn, hints=_hints_for(0, duration)
         )
         print(
             f"[highlights] content={result.get('content_type', 'other')} "

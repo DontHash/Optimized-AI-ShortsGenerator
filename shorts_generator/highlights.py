@@ -208,7 +208,7 @@ def chunk_transcript(transcript: Dict) -> List[Dict]:
     return chunks
 
 
-def call_highlight_api(
+def call_highlight_llm(
     transcript_text: str,
     content_info: Dict,
     duration: float,
@@ -359,7 +359,7 @@ def get_highlights(
             offset = chunk.get("_offset", 0)
             text = build_transcript_text(chunk)
             print(f"[highlights] chunk {i + 1}/{len(chunks)} (offset {offset:.0f}s)", flush=True)
-            result = call_highlight_api(
+            result = call_highlight_llm(
                 text, content_info, chunk["duration"], num_clips=num_clips, is_chunk=True, llm_fn=llm_fn
             )
             for h in result.get("highlights", []):
@@ -369,7 +369,7 @@ def get_highlights(
         highlights = dedupe_highlights(all_highlights)
     else:
         text = build_transcript_text(transcript)
-        result = call_highlight_api(
+        result = call_highlight_llm(
             text, content_info, duration, num_clips=num_clips, llm_fn=llm_fn, hints=hints
         )
         highlights = dedupe_highlights(result.get("highlights", []))

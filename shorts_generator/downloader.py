@@ -130,14 +130,6 @@ def _cookies_source_label() -> str:
     return browser.split(":")[0] if browser else ""
 
 
-def _cookies_browser_label() -> str:
-    """Backward-compat alias — returns browser name only when no cookie file."""
-    if _resolve_cookie_file():
-        return ""
-    browser = (os.getenv("YTDLP_COOKIES_FROM_BROWSER") or YTDLP_COOKIES_FROM_BROWSER).strip()
-    return browser.split(":")[0] if browser else ""
-
-
 def _player_clients() -> list:
     raw = _env("YTDLP_PLAYER_CLIENTS")
     if raw:

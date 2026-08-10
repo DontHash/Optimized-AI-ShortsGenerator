@@ -14,7 +14,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#cli-reference">CLI</a> ·
   <a href="#configuration">Config</a> ·
-  <a href="UPLIFT_PLAN.md">Design</a>
+  <a href="docs/UPLIFT_PLAN.md">Design</a>
 </p>
 
 ## About
@@ -215,7 +215,7 @@ flowchart LR
 6. Dedupe by time and transcript similarity; snap to sentence boundaries  
 7. Write `clips.json` (+ sidecar JSON); optionally `--render` cuts  
 
-Design notes and validation: [`UPLIFT_PLAN.md`](UPLIFT_PLAN.md). Replay holdout eval:
+Design notes and validation: [`docs/UPLIFT_PLAN.md`](docs/UPLIFT_PLAN.md). Replay holdout eval:
 
 ```bash
 python -m eval.replay_holdout urls.txt
@@ -230,7 +230,7 @@ main.py                   Clip-finding CLI
 captions.py               Standalone captions CLI
 requirements.txt
 .env.example
-UPLIFT_PLAN.md            Signal fusion design + validation notes
+docs/UPLIFT_PLAN.md      Signal fusion design + validation notes
 eval/replay_holdout.py    Ranking eval without manual labels
 shorts_generator/
   pipeline.py             find_clips() orchestration

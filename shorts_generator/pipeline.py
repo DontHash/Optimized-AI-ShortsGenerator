@@ -191,10 +191,3 @@ def find_clips(
     payload["_all_highlights"] = all_highlights  # for CLI summary; not in clips.json
     payload["_clips_json"] = clips_json_path
     return payload
-
-
-# Back-compat alias
-def generate_shorts(*args, **kwargs) -> Dict:
-    kwargs.pop("aspect_ratio", None)
-    kwargs.pop("mode", None)
-    return find_clips(*args, **kwargs)

@@ -3,7 +3,7 @@ import json
 import os
 
 from PySide6.QtCore import Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -37,6 +37,20 @@ def _badge(text: str, color: str = "") -> QLabel:
     label.setObjectName("badge" + {"#3ecf8e": "Good", "#f5b544": "Warn", "#f06060": "Bad"}.get(color, ""))
     if color not in (GOOD, WARN, BAD):
         label.setStyleSheet(f"color:{color};")
+    return label
+
+
+def _thumbnail_widget(path: str, width: int = 160) -> QLabel | None:
+    """A QLabel with the image scaled to `width` px, or None if the file is unusable."""
+    if not path or not os.path.isfile(path):
+        return None
+    pixmap = QPixmap(path)
+    if pixmap.isNull():
+        return None
+    label = QLabel()
+    label.setFixedWidth(width)
+    label.setPixmap(pixmap.scaledToWidth(width, Qt.SmoothTransformation))
+    label.setStyleSheet("border-radius:6px;")
     return label
 
 
@@ -233,6 +247,9 @@ class VideoResult(QFrame):
             lay.addWidget(err)
             return
 
+        thumb = _thumbnail_widget((payload or {}).get("thumbnail_path") or "")
+        if thumb:
+            header.addWidget(thumb)
         header.addWidget(_badge(f"{entry.get('clips', 0)} clips", GOOD))
         title_text = (payload or {}).get("video_title") or video_id
         title = QLabel(_shorten(title_text, 90))
@@ -250,3 +267,100 @@ class VideoResult(QFrame):
             no = QLabel("No clips met the threshold for this video.")
             no.setObjectName("dim")
             lay.addWidget(no)
+
+
+def _format_count(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return str(value)
+
+
+class TikTokResult(QFrame):
+    """A downloaded TikTok video: thumbnail, title, author, stats, actions."""
+
+    def __init__(self, entry: dict, parent=None):
+        super().__init__(parent)
+        self.setObjectName("panel")
+        self._entry = entry
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+        entry = self._entry
+
+        if not entry.get("ok"):
+            header = QHBoxLayout()
+            header.addWidget(_badge("FAIL", BAD))
+            title = QLabel(entry.get("url", "?"))
+            title.setObjectName("h2")
+            header.addWidget(title, 1)
+            lay.addLayout(header)
+            err = QLabel(_shorten(str(entry.get("error", "")), 300))
+            err.setStyleSheet(f"color:{BAD};")
+            err.setWordWrap(True)
+            lay.addWidget(err)
+            return
+
+        header = QHBoxLayout()
+        thumb = _thumbnail_widget(entry.get("thumbnail_path") or "", 140)
+        if thumb:
+            header.addWidget(thumb)
+        header.addWidget(_badge("DOWNLOADED", GOOD))
+        title = QLabel(_shorten(str(entry.get("title", "TikTok video")), 80))
+        title.setObjectName("h2")
+        title.setWordWrap(True)
+        header.addWidget(title, 1)
+        if entry.get("duration"):
+            header.addWidget(_badge(_hms(float(entry["duration"]))))
+        lay.addLayout(header)
+
+        meta = QHBoxLayout()
+        author = str(entry.get("author") or "unknown")
+        meta.addWidget(_badge(f"@{author}"))
+        stats = entry.get("stats") or {}
+        if stats.get("views"):
+            meta.addWidget(_badge(f"{_format_count(stats['views'])} views"))
+        if stats.get("likes"):
+            meta.addWidget(_badge(f"{_format_count(stats['likes'])} likes", GOOD))
+        if stats.get("comments"):
+            meta.addWidget(_badge(f"{_format_count(stats['comments'])} comments"))
+        meta.addStretch(1)
+        lay.addLayout(meta)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.open_btn = QPushButton("Open File")
+        self.open_btn.setObjectName("primary")
+        self.open_btn.setEnabled(bool(entry.get("source_path")))
+        self.open_btn.clicked.connect(self._open_file)
+        actions.addWidget(self.open_btn)
+        tiktok_btn = QPushButton("Open in TikTok")
+        tiktok_btn.setObjectName("ghost")
+        tiktok_btn.clicked.connect(self._open_tiktok)
+        actions.addWidget(tiktok_btn)
+        copy_btn = QPushButton("Copy URL")
+        copy_btn.setObjectName("ghost")
+        copy_btn.clicked.connect(self._copy_url)
+        actions.addWidget(copy_btn)
+        lay.addLayout(actions)
+
+    def _open_file(self):
+        path = self._entry.get("source_path") or ""
+        if path and os.path.isfile(path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _open_tiktok(self):
+        video_id = self._entry.get("video_id")
+        if video_id:
+            QDesktopServices.openUrl(QUrl(f"https://www.tiktok.com/@x/video/{video_id}"))
+
+    def _copy_url(self):
+        from PySide6.QtWidgets import QApplication
+
+        url = self._entry.get("url") or ""
+        if url:
+            QApplication.clipboard().setText(url)

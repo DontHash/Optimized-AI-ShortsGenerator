@@ -188,10 +188,23 @@ python -m studio_app         # or: clipclipper-gui
 ```
 
 - **Drag and drop** — drop `urls.txt` files or pasted YouTube URLs straight into the queue; drag rows to reorder
+- **Two modes** — *YouTube Clips* (rank + download) or *TikTok Download* (watermark-free video + title + thumbnail + stats, no ranking)
 - **Parallel processing** — the queue runs 2 videos at once (downloads are network-bound); Stop cancels cleanly
 - **Live pipeline log** — every `[download]` / `[transcribe]` / `[signals]` line streams into the Log tab
 - **Per-clip cards** — score badge, hook, virality reason, transcript excerpt, LLM/replay/audio/chapter signal bars, and actions: *Render MP4*, *Open in YouTube* (seeks to the timestamp), *Copy JSON*
+- **Thumbnails** — YouTube and TikTok result cards show the video thumbnail + title
 - **Settings tab** — edits the same `.env` knobs the CLI uses, applied on the next run
+
+### TikTok downloads (no watermark)
+
+Select **TikTok Download** in the Studio queue, drop TikTok video URLs, and each is saved to
+`output/tiktok/<video_id>/` with the title, author, view/like/comment counts and thumbnail.
+
+- Watermark-free: selects yt-dlp formats that skip TikTok's watermarked `download` format
+- For the most reliable extraction, install impersonation support:
+  `pip install -e .[tiktok]` (curl-cffi helps pass TikTok's JS challenge)
+- Read-only, no login, no account risk — same as visiting the page
+- TikTok rate-limits aggressively; the queue retries once with backoff and reports failures per video
 
 ## Captions
 
@@ -266,8 +279,9 @@ studio_app/               Desktop GUI (PySide6, optional: pip install -e .[gui])
   app.py                  QApplication entry + env bootstrap
   main_window.py          Queue + results + settings + log layout
   pipeline_worker.py      QThread queue runner with live log capture
-  queue_list.py           Drag-and-drop URL queue
-  clip_card.py            Per-clip result cards + background render
+  tiktok_worker.py        QThread TikTok downloader runner
+  queue_list.py           Drag-and-drop URL queue + YouTube/TikTok mode
+  clip_card.py            Clip + TikTok result cards, thumbnails, background render
   settings_panel.py       .env settings editor
   theme.py                Dark professional stylesheet
 requirements.txt
@@ -277,6 +291,7 @@ eval/replay_holdout.py    Ranking eval without manual labels
 shorts_generator/
   pipeline.py             find_clips() orchestration
   queue.py                Multi-URL processing + parallel workers + queue report
+  tiktok.py               Watermark-free TikTok downloader + queue
   signals.py              Heatmap, chapters, audio, boundaries
   rerank.py               Fusion, peak expansion, dedupe
   highlights.py           LLM ranking + boundary snap

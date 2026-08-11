@@ -542,6 +542,27 @@ def fetch_auto_subs(
     return None
 
 
+def fetch_thumbnail(url: str, dest_dir: str, name: str = "thumbnail.jpg") -> Optional[str]:
+    """Download a video thumbnail next to the output. Cached; None on any failure."""
+    if not url:
+        return None
+    os.makedirs(dest_dir, exist_ok=True)
+    path = os.path.join(dest_dir, name)
+    if os.path.isfile(path):
+        return path
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = resp.read()
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+    except Exception:
+        return None
+
+
 def fetch_sponsor_segments(video_id: str) -> List[Dict]:
     """SponsorBlock segments (sponsor/intro/outro/selfpromo) for a video. [] on any failure.
 

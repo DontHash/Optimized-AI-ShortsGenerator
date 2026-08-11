@@ -17,10 +17,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .clip_card import VideoResult
+from .clip_card import TikTokResult, VideoResult
 from .pipeline_worker import PipelineWorker
 from .queue_list import SourcePanel
 from .settings_panel import SettingsPanel
+from .tiktok_worker import TikTokWorker
 
 
 class MainWindow(QMainWindow):
@@ -115,16 +116,23 @@ class MainWindow(QMainWindow):
 
         self._clear_results()
         self.log_view.clear()
+        mode = self.sources.mode()
         for url in urls:
-            self.log(f"queued {url}")
+            self.log(f"queued [{mode}] {url}")
 
         self.sources.set_running(True)
         self.progress.setVisible(True)
-        self.status_label.setText(f"Processing {len(urls)} videos…")
+        self.status_label.setText(f"Processing {len(urls)} video(s)…")
 
-        self._worker = PipelineWorker(urls, self._options(), self)
+        if mode == "tiktok":
+            self._worker = TikTokWorker(
+                urls, {"out_root": str(self._results_root), "workers": 1}, self
+            )
+            self._worker.video_done.connect(self._on_tiktok_done)
+        else:
+            self._worker = PipelineWorker(urls, self._options(), self)
+            self._worker.video_done.connect(self._on_video_done)
         self._worker.log.connect(self.log)
-        self._worker.video_done.connect(self._on_video_done)
         self._worker.queue_done.connect(self._on_queue_done)
         self._worker.fatal.connect(lambda e: self.log(f"[studio] fatal: {e}"))
         self._worker.start()
@@ -148,11 +156,22 @@ class MainWindow(QMainWindow):
                     payload = json.loads(clips_path.read_text(encoding="utf-8"))
                 except (OSError, ValueError) as e:
                     self.log(f"[studio] could not read {clips_path}: {e}")
+            # thumbnail may predate the payload (re-run of an old run)
+            thumb = self._results_root / video_id / "thumbnail.jpg"
+            payload.setdefault("thumbnail_path", str(thumb) if thumb.is_file() else "")
         self.log(
             f"OK {video_id or entry.get('url')}: {entry.get('clips', 0)} clips"
         )
         self._add_result(VideoResult(entry, payload))
         self.status_label.setText(f"Finished {entry.get('video_id') or entry.get('url')}")
+
+    def _on_tiktok_done(self, entry: dict):
+        if entry.get("ok"):
+            self.log(f"OK tiktok/{entry.get('video_id')}: {entry.get('title')}")
+        else:
+            self.log(f"FAIL {entry.get('url')}: {entry.get('error')}")
+        self._add_result(TikTokResult(entry))
+        self.status_label.setText(f"Finished tiktok/{entry.get('video_id') or '?'}")
 
     def _on_queue_done(self, report: dict):
         self.sources.set_running(False)

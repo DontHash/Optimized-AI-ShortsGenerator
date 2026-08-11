@@ -20,6 +20,7 @@ from .downloader import (
     extract_youtube_video_id,
     fetch_auto_subs,
     fetch_sponsor_segments,
+    fetch_thumbnail,
     find_local_source,
 )
 from .highlights import get_highlights, snap_to_sentence_boundaries, transcript_excerpt
@@ -128,6 +129,7 @@ def find_clips(
         print("[pipeline] --force retry: reusing cached download/transcript when available", flush=True)
     source_path, info = download_youtube(youtube_url, fmt=fmt, out_dir=video_dir)
     video_title = str(info.get("title") or video_id)
+    thumbnail_path = fetch_thumbnail(info.get("thumbnail"), video_dir)
 
     # Put transcript cache next to the source so re-runs stay cheap.
     # Free path: fetch YouTube auto-captions; fall back to faster-whisper if absent.
@@ -225,6 +227,7 @@ def find_clips(
         highlights=ranked,
         num_clips=num_clips,
     )
+    payload["thumbnail_path"] = thumbnail_path
 
     if render:
         print(f"[pipeline] rendering {len(payload['clips'])} clips", flush=True)

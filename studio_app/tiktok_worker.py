@@ -1,9 +1,4 @@
-"""QThread wrapper around shorts_generator.queue.process_queue.
-
-Captures stdout lines from the pipeline (they are print()-based) and re-emits
-them as Qt signals so the UI log stays live. Env is applied before the first
-shorts_generator import (deferred to run()) so settings take effect.
-"""
+"""QThread wrapper around shorts_generator.tiktok.process_tiktok_queue."""
 import sys
 
 from PySide6.QtCore import QThread, Signal
@@ -11,9 +6,7 @@ from PySide6.QtCore import QThread, Signal
 from ._logpipe import LogPipe
 
 
-class PipelineWorker(QThread):
-    """Runs the queue. Emits log lines, per-video results, and a final report."""
-
+class TikTokWorker(QThread):
     log = Signal(str)
     video_done = Signal(dict)
     queue_done = Signal(dict)
@@ -29,22 +22,16 @@ class PipelineWorker(QThread):
         self._cancelled = True
 
     def run(self):
-        from shorts_generator.queue import process_queue
+        from shorts_generator.tiktok import process_tiktok_queue
 
         old_stdout = sys.stdout
         old_stderr = sys.stderr
         sys.stdout = LogPipe(self.log.emit)
         sys.stderr = LogPipe(self.log.emit)
         try:
-            report = process_queue(
+            report = process_tiktok_queue(
                 self._urls,
-                num_clips=self._options.get("num_clips", 3),
-                download_format=self._options.get("format"),
-                language=self._options.get("language"),
-                min_score=self._options.get("min_score", 0),
-                render=self._options.get("render", False),
-                accurate_cut=self._options.get("accurate_cut", False),
-                force=self._options.get("force", False),
+                out_root=self._options.get("out_root"),
                 workers=self._options.get("workers", 1),
                 on_video_done=self.video_done.emit,
                 is_cancelled=lambda: self._cancelled,

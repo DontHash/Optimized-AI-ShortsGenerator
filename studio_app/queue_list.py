@@ -6,6 +6,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -102,11 +103,14 @@ class QueueList(QListWidget):
 
 
 class SourcePanel(QWidget):
-    """Left-side panel: URL input, queue list, run controls."""
+    """Left-side panel: mode switch, URL input, queue list, run controls."""
 
     start_requested = Signal()
     stop_requested = Signal()
     urls_changed = Signal()
+    mode_changed = Signal(str)  # "youtube" | "tiktok"
+
+    MODES = [("youtube", "YouTube Clips (rank + download)"), ("tiktok", "TikTok Download (no watermark)")]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -121,9 +125,15 @@ class SourcePanel(QWidget):
         title = QLabel("ClipClipper Studio")
         title.setObjectName("h1")
         layout.addWidget(title)
-        subtitle = QLabel("Drop YouTube URLs or a urls.txt file")
-        subtitle.setObjectName("dim")
-        layout.addWidget(subtitle)
+        self.subtitle = QLabel("Drop YouTube URLs or a urls.txt file")
+        self.subtitle.setObjectName("dim")
+        layout.addWidget(self.subtitle)
+
+        self.mode_combo = QComboBox()
+        for value, label in self.MODES:
+            self.mode_combo.addItem(label, value)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        layout.addWidget(self.mode_combo)
 
         input_row = QHBoxLayout()
         self.url_input = QLineEdit()
@@ -168,6 +178,18 @@ class SourcePanel(QWidget):
         layout.addWidget(self.count_label)
         self.urls_changed.connect(self._refresh_count)
         self._refresh_count()
+
+    def mode(self) -> str:
+        return self.mode_combo.currentData() or "youtube"
+
+    def _on_mode_changed(self):
+        tiktok = self.mode() == "tiktok"
+        self.url_input.setPlaceholderText("Paste a TikTok video URL…" if tiktok else "Paste a YouTube URL…")
+        self.subtitle.setText(
+            "Drop TikTok video URLs (no watermark — no ranking)" if tiktok
+            else "Drop YouTube URLs or a urls.txt file"
+        )
+        self.mode_changed.emit(self.mode())
 
     def _refresh_count(self):
         n = self.queue.count()

@@ -51,8 +51,9 @@ def _write_srt(path: Path, transcript: Dict) -> Path:
     return path
 
 
-def load_srt_file(path: Path) -> Dict:
-    """Parse an SRT file into {duration, segments}. Empty-safe."""
+def load_srt_file(path) -> Dict:
+    """Parse an SRT file into {duration, segments}. Empty-safe. Accepts str or Path."""
+    path = Path(path)
     content = path.read_text(encoding="utf-8-sig").strip()
     if not content:
         return {"duration": 0.0, "segments": []}

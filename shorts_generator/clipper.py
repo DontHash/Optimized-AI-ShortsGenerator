@@ -158,7 +158,8 @@ def _encode_segment(
 def _concat(parts: List[str], out_path: str) -> None:
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
         for p in parts:
-            escaped = p.replace("'", "'\\''")
+            # absolute paths: the concat demuxer resolves entries relative to the LIST file
+            escaped = os.path.abspath(p).replace("'", "'\\''")
             f.write(f"file '{escaped}'\n")
         list_path = f.name
     try:
@@ -329,7 +330,8 @@ def compile_shorts(
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
         for p in clip_paths:
-            escaped = p.replace("'", "'\\''")
+            # absolute paths: concat resolves entries relative to the LIST file
+            escaped = os.path.abspath(p).replace("'", "'\\''")
             f.write(f"file '{escaped}'\n")
         list_path = f.name
     try:

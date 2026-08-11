@@ -1,5 +1,6 @@
 """Settings panel: edit .env knobs, persist to disk, apply to the process env."""
 import os
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -37,6 +38,11 @@ _FIELDS = [
 ]
 
 
+def _clean_value(raw: str) -> str:
+    """Strip quotes and inline comments (a '#' preceded by whitespace) from a .env value."""
+    return re.sub(r"\s+#.*$", "", raw.strip().strip('"').strip("'")).strip()
+
+
 def load_env_file() -> dict:
     """Parse .env into {KEY: value} preserving only the last value per key."""
     values = {}
@@ -47,7 +53,7 @@ def load_env_file() -> dict:
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key, _, value = line.partition("=")
-                values[key.strip()] = value.strip().strip('"').strip("'")
+                values[key.strip()] = _clean_value(value)
         except OSError:
             pass
     return values

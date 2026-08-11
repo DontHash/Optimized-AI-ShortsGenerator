@@ -33,7 +33,8 @@ The pipeline runs **locally** — `yt-dlp`, `faster-whisper`, and Gemini (free t
 - **Auto-captions shortcut** — uses YouTube's own captions when available, skipping Whisper entirely (faster, no GPU)
 - **SponsorBlock exclusion** — sponsor/intro/outro segments are fetched and clips landing inside them are dropped
 - **Caching** — re-runs reuse download, transcript, audio curve, and heatmap; skip completed videos unless `--force`
-- **Batch queue** — multiple URLs or a `.txt` file; summary in `output/queue_report.json`
+- **Batch queue** — multiple URLs or a `.txt` file; parallel workers (2× speed on multi-video runs); summary in `output/queue_report.json`
+- **Desktop studio (GUI)** — native PySide6 app: drag-and-drop URLs, live pipeline log, per-clip cards with signal breakdown, render/preview actions
 - **Optional render** — ffmpeg cuts at source aspect ratio (no vertical crop, no third-party video API)
 - **Captions helper** — SRT, karaoke ASS, optional burn-in via `captions.py`
 
@@ -177,6 +178,21 @@ python main.py "..." --no-browser-cookies
 
 See `.env.example` for `YTDLP_PLAYER_CLIENTS` and related yt-dlp tuning.
 
+## Studio — desktop GUI
+
+A native Qt desktop app (PySide6) around the same pipeline — **not** a web app:
+
+```bash
+pip install -e .[gui]        # or: pip install PySide6
+python -m studio_app         # or: clipclipper-gui
+```
+
+- **Drag and drop** — drop `urls.txt` files or pasted YouTube URLs straight into the queue; drag rows to reorder
+- **Parallel processing** — the queue runs 2 videos at once (downloads are network-bound); Stop cancels cleanly
+- **Live pipeline log** — every `[download]` / `[transcribe]` / `[signals]` line streams into the Log tab
+- **Per-clip cards** — score badge, hook, virality reason, transcript excerpt, LLM/replay/audio/chapter signal bars, and actions: *Render MP4*, *Open in YouTube* (seeks to the timestamp), *Copy JSON*
+- **Settings tab** — edits the same `.env` knobs the CLI uses, applied on the next run
+
 ## Captions
 
 Works on any local video file (including rendered clips):
@@ -246,18 +262,26 @@ Generated and tooling artifacts stay out of git: `output/` (runs), `graphify-out
 ```
 main.py                   Clip-finding CLI
 captions.py               Standalone captions CLI
+studio_app/               Desktop GUI (PySide6, optional: pip install -e .[gui])
+  app.py                  QApplication entry + env bootstrap
+  main_window.py          Queue + results + settings + log layout
+  pipeline_worker.py      QThread queue runner with live log capture
+  queue_list.py           Drag-and-drop URL queue
+  clip_card.py            Per-clip result cards + background render
+  settings_panel.py       .env settings editor
+  theme.py                Dark professional stylesheet
 requirements.txt
 .env.example
 docs/UPLIFT_PLAN.md      Signal fusion design + validation notes
 eval/replay_holdout.py    Ranking eval without manual labels
 shorts_generator/
   pipeline.py             find_clips() orchestration
-  queue.py                Multi-URL processing + queue report
+  queue.py                Multi-URL processing + parallel workers + queue report
   signals.py              Heatmap, chapters, audio, boundaries
   rerank.py               Fusion, peak expansion, dedupe
   highlights.py           LLM ranking + boundary snap
   downloader.py           yt-dlp (YouTube + metadata for signals)
-  transcriber.py          faster-whisper
+  transcriber.py          faster-whisper / auto-captions
   llm.py                  OpenAI / Gemini
   clipper.py              ffmpeg cut (no crop)
   captions.py             SRT / ASS / burn

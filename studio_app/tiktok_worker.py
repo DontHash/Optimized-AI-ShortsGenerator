@@ -33,6 +33,7 @@ class TikTokWorker(QThread):
                 self._urls,
                 out_root=self._options.get("out_root"),
                 workers=self._options.get("workers", 1),
+                delay=self._options.get("delay", 0.0),
                 on_video_done=self.video_done.emit,
                 is_cancelled=lambda: self._cancelled,
             )

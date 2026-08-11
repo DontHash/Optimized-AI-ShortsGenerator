@@ -125,8 +125,11 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Processing {len(urls)} video(s)…")
 
         if mode == "tiktok":
+            delay = self.settings._controls["tiktok_delay"][0].value()
             self._worker = TikTokWorker(
-                urls, {"out_root": str(self._results_root), "workers": 1}, self
+                urls,
+                {"out_root": str(self._results_root), "workers": 1, "delay": float(delay)},
+                self,
             )
             self._worker.video_done.connect(self._on_tiktok_done)
         else:

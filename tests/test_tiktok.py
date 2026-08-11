@@ -1,8 +1,13 @@
-"""Tests for shorts_generator.tiktok — ID parsing, format selection, queue."""
+"""Tests for shorts_generator.tiktok — ID parsing, format selection, queue, pacing."""
 import time
 
 import shorts_generator.tiktok as tiktok_mod
-from shorts_generator.tiktok import extract_tiktok_id, process_tiktok_queue, watermark_free_format
+from shorts_generator.tiktok import (
+    _TIKTOK_PLACEHOLDER_TITLE_RE,
+    extract_tiktok_id,
+    process_tiktok_queue,
+    watermark_free_format,
+)
 
 
 def test_extract_tiktok_id_variants():
@@ -56,3 +61,25 @@ def test_process_tiktok_queue_cancel(monkeypatch, tmp_path):
                         lambda url, out_root=None, use_cookies=False: {"ok": True, "url": url})
     report = process_tiktok_queue(["u1", "u2"], out_root=str(tmp_path), is_cancelled=lambda: True)
     assert report.get("cancelled") is True
+
+
+def test_process_tiktok_queue_delay_staggers_starts(monkeypatch, tmp_path):
+    """With delay, video i starts at ~delay*i -> total wall time grows with delay."""
+    starts = []
+
+    def tracked(url, out_root=None, use_cookies=False):
+        starts.append(time.monotonic())
+        return {"ok": True, "url": url, "video_id": url}
+    monkeypatch.setattr(tiktok_mod, "download_tiktok", tracked)
+
+    process_tiktok_queue(["u1", "u2", "u3"], out_root=str(tmp_path), workers=3, delay=0.15)
+    # u2 starts >= 0.15s after u1, u3 >= 0.30s after u1
+    assert len(starts) == 3
+    assert starts[1] - starts[0] >= 0.13
+    assert starts[2] - starts[0] >= 0.28
+
+
+def test_placeholder_title_regex():
+    assert _TIKTOK_PLACEHOLDER_TITLE_RE.match("TikTok video #1234567890")
+    assert not _TIKTOK_PLACEHOLDER_TITLE_RE.match("real caption here")
+    assert not _TIKTOK_PLACEHOLDER_TITLE_RE.match("TikTok video")

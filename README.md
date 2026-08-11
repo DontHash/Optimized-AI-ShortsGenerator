@@ -204,7 +204,9 @@ Select **TikTok Download** in the Studio queue, drop TikTok video URLs, and each
 - For the most reliable extraction, install impersonation support:
   `pip install -e .[tiktok]` (curl-cffi helps pass TikTok's JS challenge)
 - Read-only, no login, no account risk — same as visiting the page
-- TikTok rate-limits aggressively; the queue retries once with backoff and reports failures per video
+- TikTok rate-limits aggressively; the queue paces itself with a configurable
+  per-video delay (Settings → *TikTok pacing*, default 8s) and retries once
+  with backoff; failed downloads report per video
 
 ## Captions
 

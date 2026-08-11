@@ -25,6 +25,8 @@ _USER_AGENT = (
 
 _TIKTOK_ID_RE = re.compile(r"tiktok\.com/(?:@[\w.]+/)?video/(\d+)", re.IGNORECASE)
 _MEDIA_EXTS = (".mp4", ".mkv", ".webm")
+# yt-dlp's generic title when the video has no caption — not useful as a display title
+_TIKTOK_PLACEHOLDER_TITLE_RE = re.compile(r"^TikTok video #\d+$", re.IGNORECASE)
 
 
 def extract_tiktok_id(url: str) -> Optional[str]:
@@ -124,7 +126,7 @@ def download_tiktok(
 
     thumbnail_path = fetch_thumbnail(info.get("thumbnail"), video_dir)
     title = str(info.get("description") or info.get("title") or "").strip()
-    if not title:
+    if not title or _TIKTOK_PLACEHOLDER_TITLE_RE.match(title):
         title = f"@{info.get('channel', video_id)} TikTok video"
 
     stats = {
@@ -151,10 +153,16 @@ def process_tiktok_queue(
     urls: List[str],
     out_root: Optional[str] = None,
     workers: int = 1,
+    delay: float = 0.0,
     on_video_done=None,
     is_cancelled=None,
 ) -> Dict:
-    """Queue of TikTok URLs with fault isolation + parallel workers (mirrors queue.py)."""
+    """Queue of TikTok URLs with fault isolation + parallel workers (mirrors queue.py).
+
+    ``delay`` (seconds) paces the queue: video *i* starts at ~delay*i so long
+    queues don't hammer TikTok's rate limiter. Workers still run in parallel,
+    just with staggered starts.
+    """
     import concurrent.futures
     import json
 
@@ -171,9 +179,14 @@ def process_tiktok_queue(
             except Exception:  # noqa: BLE001
                 pass
 
+    def _staggered(url: str, index: int) -> Dict:
+        if index and delay > 0:
+            time.sleep(delay * index)
+        return download_tiktok(url, out_root)
+
     if workers > 1 and len(urls) > 1:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(download_tiktok, url, out_root) for url in urls]
+            futures = [pool.submit(_staggered, url, i) for i, url in enumerate(urls)]
             for future in concurrent.futures.as_completed(futures):
                 if cancelled or (is_cancelled and is_cancelled()):
                     cancelled = True
@@ -183,10 +196,12 @@ def process_tiktok_queue(
                 for f in futures:
                     f.cancel()
     else:
-        for url in urls:
+        for i, url in enumerate(urls):
             if cancelled or (is_cancelled and is_cancelled()):
                 cancelled = True
                 break
+            if i and delay > 0:
+                time.sleep(delay)
             print(f"[tiktok] {url}", flush=True)
             _finish(download_tiktok(url, out_root))
 

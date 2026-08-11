@@ -338,6 +338,25 @@ def _probe_info(video_url: str, video_id: str) -> Dict:
             return {"id": video_id, "title": video_id, "duration": 0}
 
 
+def fetch_meta(url: str) -> Optional[Dict]:
+    """Lightweight metadata (title/thumbnail/duration) without downloading.
+
+    Used by the Studio queue preview. None on failure (e.g. rate-limited).
+    """
+    video_id = extract_youtube_video_id(url) or ""
+    info = _probe_info(url, video_id)
+    if not info or not info.get("title") or info.get("title") == info.get("id"):
+        return None
+    meta: Dict = {
+        "title": str(info.get("title") or ""),
+        "thumbnail": info.get("thumbnail"),
+        "duration": float(info.get("duration") or 0),
+    }
+    if video_id:
+        meta["video_id"] = video_id
+    return meta
+
+
 def _load_meta(source_path: str, video_id: str, video_url: Optional[str] = None) -> Dict:
     path = _meta_path(source_path)
     if os.path.isfile(path):

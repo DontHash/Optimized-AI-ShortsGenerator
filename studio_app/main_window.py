@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from .clip_card import TikTokResult, VideoResult
 from .pipeline_worker import PipelineWorker
+from .preview import PreviewPanel
 from .queue_list import SourcePanel
 from .settings_panel import SettingsPanel
 from .tiktok_worker import TikTokWorker
@@ -70,6 +71,9 @@ class MainWindow(QMainWindow):
 
         self.settings = SettingsPanel()
         self.tabs.addTab(self.settings, "Settings")
+
+        self.preview = PreviewPanel()
+        self.tabs.addTab(self.preview, "Preview")
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -222,3 +226,16 @@ class MainWindow(QMainWindow):
 
     def _add_result(self, widget):
         self.results_lay.insertWidget(self.results_lay.count() - 1, widget)
+        if hasattr(widget, "_cards"):
+            for card in widget._cards:
+                card.preview_cb = self.play_preview
+
+    def play_preview(self, video_id: str, start_seconds: float):
+        from .clip_card import _video_assets
+
+        _video_dir, source, _segments = _video_assets(video_id)
+        if not source or not os.path.isfile(source):
+            self.status_label.setText(f"Source not downloaded yet for {video_id}")
+            return
+        self.tabs.setCurrentWidget(self.preview)
+        self.preview.play_file(source, start_seconds)

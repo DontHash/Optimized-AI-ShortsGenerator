@@ -6,9 +6,12 @@ import re
 from PySide6.QtCore import Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -144,6 +147,50 @@ class AudioExtractWorker(QThread):
             self.done.emit("", str(e))
 
 
+class CompileWorker(QThread):
+    """Stitches rendered shorts into one video (optional background music)."""
+
+    done = Signal(str, str)  # out path or "", error
+
+    def __init__(self, clip_paths: list, out_path: str, music_path: str, parent=None):
+        super().__init__(parent)
+        self._clip_paths = clip_paths
+        self._out_path = out_path
+        self._music_path = music_path
+
+    def run(self):
+        try:
+            from shorts_generator.clipper import compile_shorts
+
+            compile_shorts(self._clip_paths, self._out_path,
+                           music_path=self._music_path or None)
+            self.done.emit(self._out_path, "")
+        except Exception as e:  # noqa: BLE001
+            self.done.emit("", str(e))
+
+
+class UploadWorker(QThread):
+    """Uploads a video to YouTube via OAuth."""
+
+    done = Signal(dict, str)  # result or {}, error
+
+    def __init__(self, path: str, title: str, description: str, tags: list, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._title = title
+        self._description = description
+        self._tags = tags
+
+    def run(self):
+        try:
+            from shorts_generator.uploader import upload_video
+
+            result = upload_video(self._path, self._title, self._description, self._tags)
+            self.done.emit(result, "")
+        except Exception as e:  # noqa: BLE001
+            self.done.emit({}, str(e))
+
+
 def _video_assets(video_id: str) -> tuple:
     """(video_dir, source_path, transcript_segments) for a video id."""
     from shorts_generator.config import OUTPUT_DIR
@@ -178,6 +225,7 @@ class ClipCard(QFrame):
         self._video_id = video_id
         self._render_worker = None
         self._shorts_worker = None
+        self.preview_cb = None  # set by MainWindow: fn(video_id, start_seconds)
         self._build()
 
     def _build(self):
@@ -242,6 +290,10 @@ class ClipCard(QFrame):
 
         actions = QHBoxLayout()
         actions.addStretch(1)
+        preview_btn = QPushButton("Preview")
+        preview_btn.setObjectName("ghost")
+        preview_btn.clicked.connect(self._preview)
+        actions.addWidget(preview_btn)
         self.short_btn = QPushButton("Render Short 9:16")
         self.short_btn.clicked.connect(self._start_shorts)
         actions.addWidget(self.short_btn)
@@ -272,6 +324,10 @@ class ClipCard(QFrame):
         lay.addWidget(self.thumb_label)
 
     # -- actions --------------------------------------------------------- #
+    def _preview(self):
+        if self.preview_cb:
+            self.preview_cb(self._video_id, float(self._clip.get("start_time", 0)))
+
     def _clip_path(self) -> str:
         path = self._clip.get("clip_path") or ""
         return path if os.path.isfile(path) else ""
@@ -375,6 +431,7 @@ class VideoResult(QFrame):
         super().__init__(parent)
         self.setObjectName("panel")
         self._entry = entry
+        self._payload = payload or {}
         self._build(entry, payload, error)
 
     def _build(self, entry: dict, payload: dict | None, error: str):
@@ -410,6 +467,9 @@ class VideoResult(QFrame):
 
         self._cards = []
         self._batch_worker = None
+        self._compile_worker = None
+        self._upload_worker = None
+        self._compiled = ""
         clips = (payload or {}).get("clips") or []
         for clip in clips:
             card = ClipCard(clip, video_id)
@@ -422,7 +482,25 @@ class VideoResult(QFrame):
             self.batch_btn.setObjectName("ghost")
             self.batch_btn.clicked.connect(self._start_batch)
             batch_row.addWidget(self.batch_btn)
+            self.music_chk = QCheckBox("background music")
+            batch_row.addWidget(self.music_chk)
             lay.addLayout(batch_row)
+
+            compile_row = QHBoxLayout()
+            compile_row.addStretch(1)
+            self.compile_btn = QPushButton("Compile Short")
+            self.compile_btn.setObjectName("ghost")
+            self.compile_btn.clicked.connect(self._start_compile)
+            compile_row.addWidget(self.compile_btn)
+            self.upload_btn = QPushButton("Upload to YouTube")
+            self.upload_btn.setObjectName("ghost")
+            self.upload_btn.setEnabled(False)
+            self.upload_btn.clicked.connect(self._start_upload)
+            compile_row.addWidget(self.upload_btn)
+            self.compile_status = QLabel("")
+            self.compile_status.setObjectName("dim")
+            compile_row.addWidget(self.compile_status, 1)
+            lay.addLayout(compile_row)
         if not clips:
             no = QLabel("No clips met the threshold for this video.")
             no.setObjectName("dim")
@@ -449,6 +527,66 @@ class VideoResult(QFrame):
         for card, result in zip(self._cards, results, strict=False):
             if result.get("short_path") and os.path.isfile(result["short_path"]):
                 card._shorts_done(result["short_path"], "", str(card._clip.get("title", "clip")))
+
+    # -- compile + upload ------------------------------------------------- #
+    def _start_compile(self):
+        if self._compile_worker and self._compile_worker.isRunning():
+            return
+        paths = [c._clip.get("short_path") for c in self._cards
+                 if c._clip.get("short_path") and os.path.isfile(c._clip["short_path"])]
+        if not paths:
+            self.compile_status.setText("Render at least one short first.")
+            return
+        music = ""
+        if self.music_chk.isChecked():
+            music, _ = QFileDialog.getOpenFileName(
+                self, "Background music", "", "Audio (*.mp3 *.m4a *.wav)")
+            if not music:
+                return
+        video_id = self._entry.get("video_id") or "video"
+        out_dir = os.path.dirname(paths[0])
+        out_path = os.path.join(out_dir, f"compiled_{video_id}.mp4")
+        self.compile_btn.setEnabled(False)
+        self.compile_status.setText("Compiling…")
+        self._compile_worker = CompileWorker(paths, out_path, music, self)
+        self._compile_worker.done.connect(self._compile_done)
+        self._compile_worker.start()
+
+    def _compile_done(self, path: str, error: str):
+        self.compile_btn.setEnabled(True)
+        if path and os.path.isfile(path):
+            self._compiled = path
+            self.compile_status.setText("Compiled ✓")
+            self.upload_btn.setEnabled(True)
+        else:
+            self.compile_status.setText(f"Compile failed: {error}")
+
+    def _start_upload(self):
+        if not getattr(self, "_compiled", "") or not os.path.isfile(self._compiled):
+            return
+        title = str((self._payload or {}).get("video_title") or "ClipClipper short")
+        words = [w for w in re.findall(r"[a-zA-Z0-9]{4,}", title.lower())
+                 if w not in {"with", "that", "this", "your", "from", "have", "they",
+                              "what", "when", "them", "about", "would", "there",
+                              "their", "these", "being", "could", "because"}]
+        tags = list(dict.fromkeys(words))[:8] + ["shorts", "clips"]
+        self.upload_btn.setEnabled(False)
+        self.upload_btn.setText("Uploading…")
+        self._upload_worker = UploadWorker(
+            self._compiled, title + " #shorts", "", tags, self)
+        self._upload_worker.done.connect(self._upload_done)
+        self._upload_worker.start()
+
+    def _upload_done(self, result: dict, error: str):
+        self.upload_btn.setEnabled(True)
+        self.upload_btn.setText("Upload to YouTube")
+        if result.get("url"):
+            self.compile_status.setText(f"Uploaded: {result['url']}")
+            QDesktopServices.openUrl(QUrl(result["url"]))
+            return
+        QMessageBox.warning(
+            self, "Upload failed",
+            f"{error}\n\nSee the uploader module for setup (client_secrets.json).")
 
 
 def _format_count(value: int) -> str:

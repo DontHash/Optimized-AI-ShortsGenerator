@@ -191,9 +191,29 @@ python -m studio_app         # or: clipclipper-gui
 - **Two modes** — *YouTube Clips* (rank + download) or *TikTok Download* (watermark-free video + title + thumbnail + stats, no ranking)
 - **Parallel processing** — the queue runs 2 videos at once (downloads are network-bound); Stop cancels cleanly
 - **Live pipeline log** — every `[download]` / `[transcribe]` / `[signals]` line streams into the Log tab
-- **Per-clip cards** — score badge, hook, virality reason, transcript excerpt, LLM/replay/audio/chapter signal bars, and actions: *Render MP4*, *Open in YouTube* (seeks to the timestamp), *Copy JSON*
+- **Preview player** — embedded playback of the source video, seeking straight to a clip
+- **Queue persistence** — your queue and mode survive restarts (`output/studio_queue.json`)
+- **Per-clip cards** — score badge, hook, virality reason, transcript excerpt, LLM/replay/audio/chapter signal bars, and actions: *Render Short 9:16*, *Render MP4*, *Preview*, *Open in YouTube*, *Copy Upload Text*
 - **Thumbnails** — YouTube and TikTok result cards show the video thumbnail + title
 - **Settings tab** — edits the same `.env` knobs the CLI uses, applied on the next run
+
+### Shorts creator (9:16)
+
+Turn clips into ready-to-post vertical shorts:
+
+- **Intelligent crop** — face-aware: OpenCV tracks the speaker and the crop window
+  follows them (rolling-median smoothing → few constant-crop segments per clip);
+  falls back to center crop when no faces. `pip install -e .[shorts]`
+- **One-click** — *Render Short 9:16* on any clip card (or *Render all as Shorts*);
+  produces `output/<video_id>/<rank>_<name>_short.mp4` with fades + loudnorm
+- **Captions** — burn transcript captions onto the short (Settings → *burn captions*)
+- **Thumbnail** — hook frame extracted to `<rank>_<name>_short.jpg`
+- **Compile Short** — stitch all rendered shorts into one video, optional background
+  music (checkbox → pick an mp3)
+- **Upload to YouTube** — OAuth upload of the compiled short (`pip install -e .[upload]`;
+  needs `client_secrets.json` from Google Cloud Console — see `shorts_generator/uploader.py`)
+- **Copy Upload Text** — title + auto hashtags to paste into the upload form
+- CLI: `python main.py urls.txt --shorts` renders every clip as a short
 
 ### TikTok downloads (no watermark)
 

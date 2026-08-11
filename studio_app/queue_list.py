@@ -1,6 +1,9 @@
 """URL queue list with drag-and-drop: drop .txt files or pasted URLs in,
-drag rows to reorder."""
+drag rows to reorder. Persists the queue to output/studio_queue.json."""
+import json
+import os
 import re
+from pathlib import Path
 
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
@@ -115,7 +118,38 @@ class SourcePanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("panel")
+        self._queue_path = Path(os.getenv("LOCAL_OUTPUT_DIR") or "output") / "studio_queue.json"
         self._build()
+        self._restore_queue()
+
+    def _queue_state(self) -> dict:
+        return {"mode": self.mode(), "urls": self.queue.urls()}
+
+    def _save_queue(self):
+        try:
+            self._queue_path.parent.mkdir(parents=True, exist_ok=True)
+            self._queue_path.write_text(
+                json.dumps(self._queue_state(), ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError:
+            pass
+
+    def _restore_queue(self):
+        try:
+            if not self._queue_path.is_file():
+                return
+            state = json.loads(self._queue_path.read_text(encoding="utf-8"))
+            mode = state.get("mode")
+            for i, (value, _label) in enumerate(self.MODES):
+                if value == mode:
+                    self.mode_combo.setCurrentIndex(i)
+            self.queue.add_urls([u for u in state.get("urls", []) if u])
+        except (OSError, ValueError):
+            pass
+
+    def _persist_hook(self):
+        self.urls_changed.emit()
+        self._save_queue()
 
     def _build(self):
         layout = QVBoxLayout(self)
@@ -146,7 +180,7 @@ class SourcePanel(QWidget):
         layout.addLayout(input_row)
 
         self.queue = QueueList()
-        self.queue.urls_changed.connect(self.urls_changed)
+        self.queue.urls_changed.connect(self._persist_hook)
         layout.addWidget(self.queue, 1)
 
         file_row = QHBoxLayout()
@@ -189,6 +223,7 @@ class SourcePanel(QWidget):
             "Drop TikTok video URLs (no watermark — no ranking)" if tiktok
             else "Drop YouTube URLs or a urls.txt file"
         )
+        self._save_queue()
         self.mode_changed.emit(self.mode())
 
     def _refresh_count(self):

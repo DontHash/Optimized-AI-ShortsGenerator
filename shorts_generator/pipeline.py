@@ -94,6 +94,7 @@ def find_clips(
     accurate_cut: bool = False,
     force: bool = False,
     out_root: Optional[str] = None,
+    shorts: bool = False,
 ) -> Dict:
     """Find viral moments. Writes output/<video_id>/clips.json. Render is opt-in."""
     video_id = extract_youtube_video_id(youtube_url)
@@ -233,6 +234,14 @@ def find_clips(
         print(f"[pipeline] rendering {len(payload['clips'])} clips", flush=True)
         payload["clips"] = render_clips(
             source_path, payload["clips"], out_dir=video_dir, accurate=accurate_cut
+        )
+
+    if shorts:
+        print(f"[pipeline] rendering {len(payload['clips'])} shorts (9:16)", flush=True)
+        from .clipper import render_all_shorts
+
+        payload["clips"] = render_all_shorts(
+            source_path, payload["clips"], out_dir=video_dir, transcript_segments=segments
         )
 
     with open(clips_json_path, "w", encoding="utf-8") as f:

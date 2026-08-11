@@ -36,6 +36,9 @@ _FIELDS = [
      "llm:0.45,replay:0.25,audio:0.20,chapter:0.10", "line", None),
     ("num_clips", "Default clips per video", "_NUM_CLIPS", "3", "spin", None),
     ("tiktok_delay", "TikTok pacing (s)", "_TIKTOK_DELAY", "8", "spin", None),
+    ("shorts_captions", "Shorts: burn captions", "SHORTS_CAPTIONS", "true", "check", None),
+    ("shorts_face", "Shorts: face-aware crop", "SHORTS_FACE_CROP", "true", "check", None),
+    ("shorts_fade", "Shorts: fade (s)", "_SHORTS_FADE", "1", "spin", None),
 ]
 
 
@@ -128,7 +131,12 @@ class SettingsPanel(QWidget):
                 ctrl.setChecked(str(current).lower() not in ("false", "0", "off", "none"))
             elif kind == "spin":
                 ctrl = QSpinBox()
-                ctrl.setRange(0 if key == "tiktok_delay" else 1, 120 if key == "tiktok_delay" else 20)
+                if key == "tiktok_delay":
+                    ctrl.setRange(0, 120)
+                elif key == "shorts_fade":
+                    ctrl.setRange(0, 5)
+                else:
+                    ctrl.setRange(1, 20)
                 ctrl.setValue(int(current) if str(current).isdigit() else int(default))
             elif kind == "password":
                 ctrl = QLineEdit(current if current and current != default else "")

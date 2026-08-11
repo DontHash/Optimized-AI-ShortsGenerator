@@ -107,6 +107,16 @@ MAX_CLIP_SECONDS = float(os.getenv("MAX_CLIP_SECONDS", "180"))
 # Transcript-similarity dedupe: drop the lower-scoring of two near-identical clips
 DEDUPE_SIMILARITY = float(os.getenv("DEDUPE_SIMILARITY", "0.6"))
 
+# --- Shorts rendering (9:16) ---
+SHORTS_WIDTH = int(os.getenv("SHORTS_WIDTH", "1080"))
+SHORTS_HEIGHT = int(os.getenv("SHORTS_HEIGHT", "1920"))
+SHORTS_FPS = int(os.getenv("SHORTS_FPS", "30"))
+SHORTS_CRF = int(os.getenv("SHORTS_CRF", "20"))
+SHORTS_FADE_SECONDS = float(os.getenv("SHORTS_FADE_SECONDS", "0.5"))
+SHORTS_CAPTIONS = os.getenv("SHORTS_CAPTIONS", "true").strip().lower() != "false"
+SHORTS_FACE_CROP = os.getenv("SHORTS_FACE_CROP", "true").strip().lower() != "false"
+SHORTS_FACE_MAX_DETECT = int(os.getenv("SHORTS_FACE_MAX_DETECT", "400"))
+
 # Free path: use YouTube auto-captions when available, skip local Whisper entirely
 AUTO_SUBS_ENABLED = os.getenv("AUTO_SUBS", "true").strip().lower() != "false"
 AUTO_SUBS_LANGS = [

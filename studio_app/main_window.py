@@ -114,6 +114,8 @@ class MainWindow(QMainWindow):
         if self._worker and self._worker.isRunning():
             return
 
+        self._apply_settings_to_env()
+
         self._clear_results()
         self.log_view.clear()
         mode = self.sources.mode()
@@ -187,6 +189,27 @@ class MainWindow(QMainWindow):
         self.log(f"[queue] done — {ok} ok, {failed} failed{tail}")
 
     # -- helpers ---------------------------------------------------------- #
+    def _apply_settings_to_env(self):
+        """Push current settings into the process env so the worker's config
+        import (deferred to run()) picks them up without a restart."""
+        import os
+
+        for ctrl, env_key, kind in self.settings._controls.values():
+            if env_key.startswith("_"):
+                if env_key == "_SHORTS_FADE":
+                    os.environ["SHORTS_FADE_SECONDS"] = str(ctrl.value())
+                continue
+            if kind == "check":
+                os.environ[env_key] = "true" if ctrl.isChecked() else "false"
+            elif kind == "combo":
+                os.environ[env_key] = ctrl.currentText()
+            elif kind == "spin":
+                os.environ[env_key] = str(ctrl.value())
+            else:
+                value = ctrl.text().strip()
+                if value:
+                    os.environ[env_key] = value
+
     def log(self, line: str):
         self.log_view.appendPlainText(line)
 

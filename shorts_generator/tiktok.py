@@ -10,6 +10,7 @@ Reliability: yt-dlp needs impersonation support for TikTok's JS challenge
 aggressively — so the downloader retries once with a backoff and degrades to
 clear error messages in the queue.
 """
+import json
 import os
 import re
 import time
@@ -55,7 +56,7 @@ def _import_ytdlp():
 def _base_opts(out_dir: str, video_id: str, fmt: str) -> Dict:
     return {
         "format": fmt,
-        "outtmpl": os.path.join(out_dir, f"source_{video_id}.%(ext)s"),
+        "outtmpl": os.path.join(out_dir, "%(channel)s_%(title)s.%(ext)s"),
         "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
@@ -72,10 +73,9 @@ def _resolve_path(info: Dict, out_dir: str, video_id: str) -> str:
     path = info.get("_filename") or ""
     if path and os.path.isfile(path):
         return path
-    stem = os.path.join(out_dir, f"source_{video_id}")
-    for ext in _MEDIA_EXTS:
-        if os.path.isfile(stem + ext):
-            return stem + ext
+    for name in sorted(os.listdir(out_dir)):
+        if name.lower().endswith(_MEDIA_EXTS):
+            return os.path.join(out_dir, name)
     return ""
 
 
@@ -99,6 +99,20 @@ def download_tiktok(
     out_root = out_root or OUTPUT_DIR
     video_dir = os.path.join(out_root, "tiktok", video_id)
     os.makedirs(video_dir, exist_ok=True)
+
+    # idempotent re-run: already downloaded -> return cached metadata
+    meta_path = os.path.join(video_dir, "download.json")
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                cached = json.load(f)
+            cached["ok"] = True
+            cached["url"] = url
+            cached["cached"] = True
+            cached["clips_json"] = meta_path
+            return cached
+        except (OSError, ValueError):
+            pass
 
     yt_dlp = _import_ytdlp()
     fmt = watermark_free_format()
@@ -135,7 +149,7 @@ def download_tiktok(
         "comments": int(info.get("comment_count") or 0),
         "saves": int(info.get("save_count") or 0),
     }
-    return {
+    entry = {
         "ok": True,
         "url": url,
         "video_id": video_id,
@@ -147,6 +161,12 @@ def download_tiktok(
         "source_path": source_path,
         "clips_json": os.path.join(video_dir, "download.json"),
     }
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(entry, f, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
+    return entry
 
 
 def process_tiktok_queue(

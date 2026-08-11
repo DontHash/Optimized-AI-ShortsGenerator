@@ -47,6 +47,11 @@ def main() -> int:
         help="With --render, re-encode for frame-accurate cuts (slower)",
     )
     parser.add_argument(
+        "--shorts",
+        action="store_true",
+        help="Render vertical 9:16 shorts with face-aware cropping + captions (implies --render)",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Redo clip analysis even if clips.json exists; still reuses cached download/transcript",
@@ -94,9 +99,10 @@ def main() -> int:
         download_format=args.format or DOWNLOAD_FORMAT,
         language=args.language,
         min_score=args.min_score,
-        render=args.render,
+        render=args.render or args.shorts,
         accurate_cut=args.accurate_cut,
         force=args.force,
+        shorts=args.shorts,
     )
 
     for item in report["ok"]:

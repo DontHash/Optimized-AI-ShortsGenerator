@@ -37,6 +37,7 @@ def _run_one(
     accurate_cut: bool,
     force: bool,
     out_root: str,
+    shorts: bool = False,
 ) -> Dict:
     """Run the pipeline for one URL. Returns an ok/failed report entry (never raises)."""
     try:
@@ -50,6 +51,7 @@ def _run_one(
             accurate_cut=accurate_cut,
             force=force,
             out_root=out_root,
+            shorts=shorts,
         )
         return {
             "ok": True,
@@ -75,6 +77,7 @@ def process_queue(
     workers: int = 1,
     on_video_done: Optional[Callable[[Dict], None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    shorts: bool = False,
 ) -> Dict:
     """Process URLs. `workers` > 1 runs videos in parallel (downloads are I/O-bound).
 
@@ -102,7 +105,7 @@ def process_queue(
             futures = {
                 pool.submit(
                     _run_one, url, num_clips, download_format, language, min_score,
-                    render, accurate_cut, force, out_root,
+                    render, accurate_cut, force, out_root, shorts,
                 ): url
                 for url in urls
             }
@@ -124,7 +127,7 @@ def process_queue(
             print(f"\n[{i}/{total}] {url}", flush=True)
             entry = _run_one(
                 url, num_clips, download_format, language, min_score,
-                render, accurate_cut, force, out_root,
+                render, accurate_cut, force, out_root, shorts,
             )
             _finish(entry)
 

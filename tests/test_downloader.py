@@ -20,6 +20,11 @@ from shorts_generator.downloader import (
     ("https://example.com/video", None),
     ("not a url", None),
     ("https://vimeo.com/12345", None),
+    # scheme-less pastes are normalized
+    ("youtube.com/watch?v=noScheme1", "noScheme1"),
+    ("www.youtube.com/watch?v=noScheme2", "noScheme2"),
+    ("youtu.be/noScheme3", "noScheme3"),
+    ("www.youtube.com/shorts/noScheme4", "noScheme4"),
 ])
 def test_extract_youtube_video_id(url, expected):
     assert extract_youtube_video_id(url) == expected

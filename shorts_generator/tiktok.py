@@ -17,7 +17,7 @@ import time
 from typing import Dict, List, Optional
 
 from .config import OUTPUT_DIR
-from .downloader import fetch_thumbnail
+from .downloader import fetch_thumbnail, normalize_url
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -32,6 +32,7 @@ _TIKTOK_PLACEHOLDER_TITLE_RE = re.compile(r"^TikTok video #\d+$", re.IGNORECASE)
 
 def extract_tiktok_id(url: str) -> Optional[str]:
     """Best-effort TikTok video id from a URL. None for non-TikTok/other URLs."""
+    url = normalize_url(url)
     if not url or "tiktok.com" not in url.lower():
         return None
     match = _TIKTOK_ID_RE.search(url)

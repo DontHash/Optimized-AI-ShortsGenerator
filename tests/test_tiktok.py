@@ -13,10 +13,13 @@ from shorts_generator.tiktok import (
 def test_extract_tiktok_id_variants():
     assert extract_tiktok_id("https://www.tiktok.com/@user/video/1234567890") == "1234567890"
     assert extract_tiktok_id("https://www.tiktok.com/@user.name/video/9876543210") == "9876543210"
-    assert extract_tiktok_id("https://vm.tiktok.com/abc123/") is None  # short links unsupported
+    assert extract_tiktok_id("vm.tiktok.com/abc123/") is None  # short links unsupported
     assert extract_tiktok_id("https://youtu.be/abc123") is None
     assert extract_tiktok_id("not a url") is None
     assert extract_tiktok_id("") is None
+    # scheme-less pastes are normalized
+    assert extract_tiktok_id("www.tiktok.com/@user/video/555444333") == "555444333"
+    assert extract_tiktok_id("tiktok.com/@user/video/555444334") == "555444334"
 
 
 def test_watermark_free_format_excludes_download():

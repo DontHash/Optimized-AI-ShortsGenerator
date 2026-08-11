@@ -247,7 +247,18 @@ def _format_for(fmt: str) -> str:
     )
 
 
+def normalize_url(url: str) -> str:
+    """Prepend https:// when the scheme is missing (user pasted without it)."""
+    url = (url or "").strip()
+    if not url:
+        return url
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
+        return "https://" + url
+    return url
+
+
 def extract_youtube_video_id(source: str) -> Optional[str]:
+    source = normalize_url(source)
     parsed = urlparse(source)
     host = (parsed.netloc or "").lower()
     if host.startswith("www."):

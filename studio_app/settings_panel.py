@@ -34,11 +34,12 @@ _FIELDS = [
      ["edge", "chrome", "firefox", "brave", "none"]),
     ("rerank_weights", "Rerank weights", "RERANK_WEIGHTS",
      "llm:0.45,replay:0.25,audio:0.20,chapter:0.10", "line", None),
-    ("num_clips", "Default clips per video", "_NUM_CLIPS", "3", "spin", None),
-    ("tiktok_delay", "TikTok pacing (s)", "_TIKTOK_DELAY", "8", "spin", None),
+    ("num_clips", "Default clips per video", "NUM_CLIPS", "3", "spin", None),
+    ("tiktok_delay", "TikTok pacing (s)", "TIKTOK_DELAY", "8", "spin", None),
     ("shorts_captions", "Shorts: burn captions", "SHORTS_CAPTIONS", "true", "check", None),
     ("shorts_face", "Shorts: face-aware crop", "SHORTS_FACE_CROP", "true", "check", None),
-    ("shorts_fade", "Shorts: fade (s)", "_SHORTS_FADE", "1", "spin", None),
+    ("shorts_fade", "Shorts: fade (s)", "SHORTS_FADE_SECONDS", "1", "spin", None),
+    ("shorts_upscale", "Shorts: max upscale ×", "SHORTS_MAX_UPSCALE", "3", "spin", None),
 ]
 
 
@@ -94,7 +95,8 @@ def save_env_file(overrides: dict) -> int:
 
 
 class SettingsPanel(QWidget):
-    """Form over the project's .env. Values apply immediately and on save."""
+    """Form over the project's .env. Queue options apply on the next run;
+    render/transcription settings require an app restart."""
 
     changed = Signal()
 
@@ -137,7 +139,10 @@ class SettingsPanel(QWidget):
                     ctrl.setRange(0, 5)
                 else:
                     ctrl.setRange(1, 20)
-                ctrl.setValue(int(current) if str(current).isdigit() else int(default))
+                try:
+                    ctrl.setValue(int(float(current)))
+                except (TypeError, ValueError):
+                    ctrl.setValue(int(float(default)))
             elif kind == "password":
                 ctrl = QLineEdit(current if current and current != default else "")
                 ctrl.setEchoMode(QLineEdit.Password)
@@ -189,10 +194,27 @@ class SettingsPanel(QWidget):
         for key, value in overrides.items():
             os.environ[key] = value
         self._env.update(overrides)
-        self._status.setText(f"Saved {n} settings to .env (applies to the next run).")
+        self._status.setText(
+            f"Saved {n} settings to .env. Render/transcription changes apply "
+            "after restart; queue options apply on the next run."
+        )
         self.changed.emit()
 
     def _reload(self):
         self._env = load_env_file()
-        self._status.setText("")
+        for key, _label, env_key, default, kind, options in _FIELDS:
+            ctrl = self._controls[key][0]
+            current = self._env.get(env_key, default)
+            if kind == "combo":
+                ctrl.setCurrentText(current if current in options else default)
+            elif kind == "check":
+                ctrl.setChecked(str(current).lower() not in ("false", "0", "off", "none"))
+            elif kind == "spin":
+                try:
+                    ctrl.setValue(int(float(current)))
+                except (TypeError, ValueError):
+                    ctrl.setValue(int(float(default)))
+            else:
+                ctrl.setText(current if current and current != default else "")
+        self._status.setText("Reloaded .env.")
         self.changed.emit()

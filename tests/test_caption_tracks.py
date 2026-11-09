@@ -84,3 +84,14 @@ def test_fetch_source_subs_returns_cached_file(tmp_path):
     cached.write_text("1\n00:00:01,000 --> 00:00:02,000\nHi\n", encoding="utf-8")
     result = ct.fetch_source_subs("https://youtu.be/abc12345678", str(tmp_path), "abc12345678")
     assert result == str(cached)
+
+
+def test_cached_caption_respects_requested_language(tmp_path):
+    prefix = "source_abc12345678_auto"
+    en = tmp_path / f"{prefix}.en.srt"
+    ne = tmp_path / f"{prefix}.ne.srt"
+    en.write_text("en", encoding="utf-8")
+    ne.write_text("ne", encoding="utf-8")
+    assert ct._cached_caption(str(tmp_path), prefix, ["en"]).endswith(".en.srt")
+    assert ct._cached_caption(str(tmp_path), prefix, ["ne"]).endswith(".ne.srt")
+    assert ct._cached_caption(str(tmp_path), prefix, ["fr"]) is None

@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import threading
 
 from PySide6.QtCore import Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
@@ -11,13 +12,15 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
 )
 
-from .theme import ACCENT, BAD, GOOD, WARN, score_color
+from .theme import BAD, TEXT_SOFT, WARN, score_color
 
 SIGNAL_ORDER = [("llm", "LLM"), ("replay", "Replay"), ("audio", "Audio"), ("chapter", "Chapter")]
 
@@ -35,12 +38,12 @@ def _shorten(text: str, limit: int = 160) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def _badge(text: str, color: str = "") -> QLabel:
+def _badge(text: str, variant: str = "") -> QLabel:
+    """Badge label; variant in {good, warn, bad, accent} selects the theme color."""
     label = QLabel(text)
     label.setAlignment(Qt.AlignCenter)
-    label.setObjectName("badge" + {"#3ecf8e": "Good", "#f5b544": "Warn", "#f06060": "Bad"}.get(color, ""))
-    if color not in (GOOD, WARN, BAD):
-        label.setStyleSheet(f"color:{color};")
+    name = {"good": "Good", "warn": "Warn", "bad": "Bad", "accent": "Accent"}.get(variant, "")
+    label.setObjectName("badge" + name)
     return label
 
 
@@ -54,7 +57,7 @@ def _thumbnail_widget(path: str, width: int = 160) -> QLabel | None:
     label = QLabel()
     label.setFixedWidth(width)
     label.setPixmap(pixmap.scaledToWidth(width, Qt.SmoothTransformation))
-    label.setStyleSheet("border-radius:6px;")
+    label.setStyleSheet("border-radius:8px;")
     return label
 
 
@@ -85,7 +88,7 @@ class RenderWorker(QThread):
 class ShortsRenderWorker(QThread):
     """Renders one 9:16 short (face-aware crop + optional captions)."""
 
-    done = Signal(str, str, str)  # short_path or "", error, title
+    done = Signal(dict)  # full result dict (short_path, thumb_path, error, ...)
 
     def __init__(self, source: str, clip: dict, out_dir: str, segments: list, parent=None):
         super().__init__(parent)
@@ -99,11 +102,13 @@ class ShortsRenderWorker(QThread):
             from shorts_generator.clipper import render_shorts
 
             result = render_shorts(self._source, self._clip, self._out_dir, self._segments)
-            path = result.get("short_path") or ""
-            err = result.get("error", "")
-            self.done.emit(path, err, str(self._clip.get("title", "clip")))
+            self.done.emit(result)
         except Exception as e:  # noqa: BLE001
-            self.done.emit("", str(e), str(self._clip.get("title", "clip")))
+            self.done.emit({
+                **self._clip,
+                "short_path": None,
+                "error": str(e),
+            })
 
 
 class BatchShortsWorker(QThread):
@@ -192,25 +197,83 @@ class UploadWorker(QThread):
 
 
 def _video_assets(video_id: str) -> tuple:
-    """(video_dir, source_path, transcript_segments) for a video id."""
+    """(video_dir, source_path, transcript_segments) for a video id.
+
+    Segments prefer word-level caption caches (on-time cues); falls back to
+    the source sentence-level SRT when no word cache exists. Clip SRTs are
+    ignored because their times are already rebased to the short.
+    """
     from shorts_generator.config import OUTPUT_DIR
     from shorts_generator.downloader import find_local_source
-    from shorts_generator.transcriber import load_srt_file
+    from shorts_generator.transcriber import load_srt_file, load_word_srt
 
     out_root = os.getenv("LOCAL_OUTPUT_DIR") or OUTPUT_DIR
     video_dir = os.path.join(out_root, video_id)
     source = find_local_source(video_dir, video_id) or ""
     segments = []
     if os.path.isdir(video_dir):
-        for name in sorted(os.listdir(video_dir)):
-            if name.endswith(".srt") and not name.endswith(".words.srt"):
-                try:
-                    loaded = load_srt_file(os.path.join(video_dir, name))
-                    segments = loaded.get("segments", [])
-                except (OSError, ValueError):
-                    pass
+        names = sorted(os.listdir(video_dir))
+        word_srt = next((n for n in names if n.endswith(".words.srt")), None)
+        if word_srt:
+            words = load_word_srt(os.path.join(video_dir, word_srt))
+            if words:
+                return video_dir, source, words
+
+        srt_names = [
+            n for n in names
+            if n.endswith(".srt") and not n.endswith(".words.srt")
+            and not n.endswith("_short.srt")
+        ]
+        # Prefer the source transcript over unrelated sidecar SRTs.
+        srt_names.sort(key=lambda n: (not n.startswith("source_"), n))
+        for name in srt_names:
+            try:
+                loaded = load_srt_file(os.path.join(video_dir, name))
+            except (OSError, ValueError):
+                continue
+            if loaded and loaded.get("segments"):
+                segments = loaded["segments"]
                 break
     return video_dir, source, segments
+
+
+_PERSIST_LOCK = threading.Lock()
+
+
+def _persist_clip(video_id: str, clip: dict):
+    """Merge render paths into output/<video_id>/clips.json atomically.
+
+    Render state used to live only in memory, so a restart reset every card to
+    "Render Short" even when the file existed on disk.
+    """
+    if not video_id:
+        return
+    from shorts_generator.config import OUTPUT_DIR
+
+    out_root = os.getenv("LOCAL_OUTPUT_DIR") or OUTPUT_DIR
+    path = os.path.join(out_root, video_id, "clips.json")
+    if not os.path.isfile(path):
+        return
+    fields = ("clip_path", "short_path", "thumb_path", "ass_path")
+    try:
+        with _PERSIST_LOCK:
+            with open(path, encoding="utf-8") as f:
+                payload = json.load(f)
+            rank = int(clip.get("rank", -1))
+            for item in payload.get("clips", []):
+                if int(item.get("rank", -2)) != rank:
+                    continue
+                for key in fields:
+                    value = clip.get(key)
+                    if value:
+                        item[key] = value
+                break
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            os.replace(tmp, path)
+    except (OSError, ValueError):
+        pass
 
 
 class ClipCard(QFrame):
@@ -235,8 +298,12 @@ class ClipCard(QFrame):
 
         top = QHBoxLayout()
         score = int(self._clip.get("score", 0))
-        top.addWidget(_badge(f"#{self._clip.get('rank', '?')}", ACCENT))
-        top.addWidget(_badge(f"{score}", score_color(score)))
+        top.addWidget(_badge(f"#{self._clip.get('rank', '?')}", "accent"))
+        score_badge = _badge(f"{score}", score_color(score))
+        score_badge.setToolTip(
+            "Relative rank score within this video (not an absolute virality score)."
+        )
+        top.addWidget(score_badge)
         title = QLabel(str(self._clip.get("title", "Untitled")))
         title.setObjectName("h2")
         title.setWordWrap(True)
@@ -262,7 +329,7 @@ class ClipCard(QFrame):
         if excerpt:
             excerpt_label = QLabel(_shorten(excerpt, 280))
             excerpt_label.setWordWrap(True)
-            excerpt_label.setStyleSheet("color:#c7cbd6; font-size:12px;")
+            excerpt_label.setStyleSheet(f"color:{TEXT_SOFT}; font-size:12px;")
             lay.addWidget(excerpt_label)
 
         signals = self._clip.get("signals") or {}
@@ -295,33 +362,43 @@ class ClipCard(QFrame):
         preview_btn.clicked.connect(self._preview)
         actions.addWidget(preview_btn)
         self.short_btn = QPushButton("Render Short 9:16")
+        self.short_btn.setObjectName("primary")
+        self.short_btn.setToolTip("Crop to vertical 9:16 with face tracking, fades and loudness normalization")
         self.short_btn.clicked.connect(self._start_shorts)
         actions.addWidget(self.short_btn)
         self.render_btn = QPushButton("Render MP4")
+        self.render_btn.setToolTip("Cut this clip at the source aspect ratio (fast, no re-encode)")
         self.render_btn.clicked.connect(self._start_render)
         actions.addWidget(self.render_btn)
-        self.yt_btn = QPushButton("Open in YouTube")
-        self.yt_btn.setObjectName("ghost")
-        self.yt_btn.clicked.connect(self._open_youtube)
-        actions.addWidget(self.yt_btn)
-        self.open_btn = QPushButton("Open File")
-        self.open_btn.setObjectName("ghost")
+
+        self._more_menu = QMenu(self)
+        self._more_menu.setObjectName("panel")
+        self._more_menu.addAction("Open in YouTube", self._open_youtube)
+        self.open_btn = self._more_menu.addAction("Open File")
         self.open_btn.setEnabled(False)
-        self.open_btn.clicked.connect(self._open_file)
-        actions.addWidget(self.open_btn)
-        upload_btn = QPushButton("Copy Upload Text")
-        upload_btn.setObjectName("ghost")
-        upload_btn.clicked.connect(self._copy_upload_text)
-        actions.addWidget(upload_btn)
-        copy_btn = QPushButton("Copy JSON")
-        copy_btn.setObjectName("ghost")
-        copy_btn.clicked.connect(self._copy_json)
-        actions.addWidget(copy_btn)
+        self.open_btn.triggered.connect(self._open_file)
+        self._more_menu.addAction("Copy Upload Text", self._copy_upload_text)
+        self._more_menu.addAction("Copy JSON", self._copy_json)
+        self.more_btn = QToolButton()
+        self.more_btn.setObjectName("moreBtn")
+        self.more_btn.setText("More")
+        self.more_btn.setPopupMode(QToolButton.InstantPopup)
+        self.more_btn.setMenu(self._more_menu)
+        actions.addWidget(self.more_btn)
         lay.addLayout(actions)
 
         self.thumb_label = QLabel()
         self.thumb_label.setVisible(False)
         lay.addWidget(self.thumb_label)
+
+        # Hydrate render state persisted in clips.json (survives restarts).
+        if self._clip_path():
+            self.open_btn.setEnabled(True)
+            if self._clip.get("short_path") and os.path.isfile(str(self._clip["short_path"])):
+                self.short_btn.setText("Short ✓")
+            elif self._clip.get("clip_path") and os.path.isfile(str(self._clip["clip_path"])):
+                self.render_btn.setText("Rendered ✓")
+            self._show_thumbnail(self._clip.get("thumb_path"))
 
     # -- actions --------------------------------------------------------- #
     def _preview(self):
@@ -329,16 +406,19 @@ class ClipCard(QFrame):
             self.preview_cb(self._video_id, float(self._clip.get("start_time", 0)))
 
     def _clip_path(self) -> str:
-        path = self._clip.get("clip_path") or ""
-        return path if os.path.isfile(path) else ""
+        for key in ("short_path", "clip_path"):
+            path = str(self._clip.get(key) or "")
+            if path and os.path.isfile(path):
+                return path
+        return ""
 
     def _open_youtube(self):
         start = int(float(self._clip.get("start_time", 0)))
         QDesktopServices.openUrl(QUrl(f"https://youtu.be/{self._video_id}?t={start}"))
 
     def _open_file(self):
-        path = self._clip.get("clip_path") or ""
-        if path and os.path.isfile(path):
+        path = self._clip_path()
+        if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _copy_json(self):
@@ -370,6 +450,7 @@ class ClipCard(QFrame):
             self._clip["clip_path"] = path
             self.render_btn.setText("Rendered ✓")
             self.open_btn.setEnabled(True)
+            _persist_clip(self._video_id, self._clip)
         else:
             self.render_btn.setText("Render failed")
             self.render_btn.setToolTip(error or "unknown error")
@@ -389,19 +470,37 @@ class ClipCard(QFrame):
         self._shorts_worker.done.connect(self._shorts_done)
         self._shorts_worker.start()
 
-    def _shorts_done(self, path: str, error: str, title: str):
+    def _shorts_done(self, result: dict):
+        path = str(result.get("short_path") or "")
+        error = str(result.get("error") or "")
         self.short_btn.setEnabled(True)
         if path and os.path.isfile(path):
             self._clip["short_path"] = path
-            self._clip["thumb_path"] = (self._clip.get("thumb_path")
-                                        or os.path.splitext(path)[0] + ".jpg")
+            thumb = result.get("thumb_path")
+            if thumb and os.path.isfile(str(thumb)):
+                self._clip["thumb_path"] = thumb
+            elif not self._clip.get("thumb_path"):
+                fallback = os.path.splitext(path)[0] + ".jpg"
+                if os.path.isfile(fallback):
+                    self._clip["thumb_path"] = fallback
             self.short_btn.setText("Short ✓")
             self._show_thumbnail(self._clip.get("thumb_path"))
             self.open_btn.setEnabled(True)
+            _persist_clip(self._video_id, self._clip)
         else:
             self.short_btn.setText("Short failed")
             self.short_btn.setToolTip(error or "unknown error")
         self.render_finished.emit()
+
+    def shutdown(self):
+        """Stop this card's workers before the widget is destroyed."""
+        for worker in (self._render_worker, self._shorts_worker):
+            if worker and worker.isRunning():
+                worker.requestInterruption()
+                worker.wait(5000)
+                if worker.isRunning():
+                    worker.terminate()
+                    worker.wait(1000)
 
     def _show_thumbnail(self, path: str):
         pixmap = QPixmap(path) if path and os.path.isfile(path) else QPixmap()
@@ -442,7 +541,7 @@ class VideoResult(QFrame):
         header = QHBoxLayout()
         video_id = entry.get("video_id") or entry.get("url", "?")
         if error:
-            header.addWidget(_badge("FAIL", BAD))
+            header.addWidget(_badge("FAIL", "bad"))
             title = QLabel(video_id)
             title.setObjectName("h2")
             header.addWidget(title, 1)
@@ -456,7 +555,7 @@ class VideoResult(QFrame):
         thumb = _thumbnail_widget((payload or {}).get("thumbnail_path") or "")
         if thumb:
             header.addWidget(thumb)
-        header.addWidget(_badge(f"{entry.get('clips', 0)} clips", GOOD))
+        header.addWidget(_badge(f"{entry.get('clips', 0)} clips", "good"))
         title_text = (payload or {}).get("video_title") or video_id
         title = QLabel(_shorten(title_text, 90))
         title.setObjectName("h2")
@@ -525,8 +624,12 @@ class VideoResult(QFrame):
         self.batch_btn.setEnabled(True)
         self.batch_btn.setText("Render all as Shorts 9:16")
         for card, result in zip(self._cards, results, strict=False):
-            if result.get("short_path") and os.path.isfile(result["short_path"]):
-                card._shorts_done(result["short_path"], "", str(card._clip.get("title", "clip")))
+            if result.get("short_path") and os.path.isfile(str(result["short_path"])):
+                card._shorts_done(result)
+            else:
+                card.short_btn.setEnabled(True)
+                card.short_btn.setText("Short failed")
+                card.short_btn.setToolTip(str(result.get("error") or "unknown error"))
 
     # -- compile + upload ------------------------------------------------- #
     def _start_compile(self):
@@ -588,6 +691,21 @@ class VideoResult(QFrame):
             self, "Upload failed",
             f"{error}\n\nSee the uploader module for setup (client_secrets.json).")
 
+    def shutdown(self):
+        for card in getattr(self, "_cards", []):
+            card.shutdown()
+        for worker in (
+            getattr(self, "_batch_worker", None),
+            getattr(self, "_compile_worker", None),
+            getattr(self, "_upload_worker", None),
+        ):
+            if worker and worker.isRunning():
+                worker.requestInterruption()
+                worker.wait(5000)
+                if worker.isRunning():
+                    worker.terminate()
+                    worker.wait(1000)
+
 
 def _format_count(value: int) -> str:
     if value >= 1_000_000:
@@ -615,7 +733,7 @@ class TikTokResult(QFrame):
 
         if not entry.get("ok"):
             header = QHBoxLayout()
-            header.addWidget(_badge("FAIL", BAD))
+            header.addWidget(_badge("FAIL", "bad"))
             title = QLabel(entry.get("url", "?"))
             title.setObjectName("h2")
             header.addWidget(title, 1)
@@ -630,7 +748,7 @@ class TikTokResult(QFrame):
         thumb = _thumbnail_widget(entry.get("thumbnail_path") or "", 140)
         if thumb:
             header.addWidget(thumb)
-        header.addWidget(_badge("DOWNLOADED", GOOD))
+        header.addWidget(_badge("DOWNLOADED", "good"))
         title = QLabel(_shorten(str(entry.get("title", "TikTok video")), 80))
         title.setObjectName("h2")
         title.setWordWrap(True)
@@ -646,7 +764,7 @@ class TikTokResult(QFrame):
         if stats.get("views"):
             meta.addWidget(_badge(f"{_format_count(stats['views'])} views"))
         if stats.get("likes"):
-            meta.addWidget(_badge(f"{_format_count(stats['likes'])} likes", GOOD))
+            meta.addWidget(_badge(f"{_format_count(stats['likes'])} likes", "good"))
         if stats.get("comments"):
             meta.addWidget(_badge(f"{_format_count(stats['comments'])} comments"))
         meta.addStretch(1)

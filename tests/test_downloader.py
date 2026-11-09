@@ -1,10 +1,16 @@
 """Tests for shorts_generator.downloader — URL parsing + format selection (no network)."""
+import json
+from pathlib import Path
+
 import pytest
 
+from shorts_generator import downloader
 from shorts_generator.downloader import (
+    _ensure_netscape_cookiefile,
     _fmt_tag,
     _format_for,
     _normalize_fmt,
+    download_audio,
     extract_youtube_video_id,
     require_youtube_url,
 )
@@ -64,3 +70,39 @@ def test_fmt_tag():
     assert _fmt_tag("max") == "max"
     assert _fmt_tag("1080") == "1080"
     assert _fmt_tag("lowest") == "low"
+
+
+def test_download_audio_returns_cached_file(tmp_path):
+    # A cached <id>.m4a must be returned without touching the network.
+    path = tmp_path / "abc12345678.m4a"
+    path.write_bytes(b"fake")
+    assert download_audio("https://youtu.be/abc12345678", out_dir=str(tmp_path)) == str(path)
+
+
+def test_download_audio_rejects_non_youtube(tmp_path):
+    assert download_audio("https://example.com/video", out_dir=str(tmp_path)) is None
+
+
+def test_ensure_netscape_cookiefile_converts_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "OUTPUT_DIR", str(tmp_path))
+    cookies = tmp_path / "cookies.json"
+    cookies.write_text(
+        json.dumps(
+            [
+                {
+                    "domain": ".youtube.com",
+                    "name": "SID",
+                    "value": "secret",
+                    "path": "/",
+                    "secure": True,
+                    "expirationDate": 4102444800,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cache = _ensure_netscape_cookiefile(str(cookies))
+    assert Path(cache).name == ".cookies_netscape.txt"
+    content = Path(cache).read_text(encoding="utf-8")
+    assert "# Netscape HTTP Cookie File" in content
+    assert "\tSID\tsecret" in content

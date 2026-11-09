@@ -81,6 +81,34 @@ def load_srt_file(path) -> Dict:
     return {"duration": duration, "segments": segments}
 
 
+def _write_word_srt(path: Path, words: List[Dict]) -> Path:
+    """One SRT entry per word, so caption timing stays tight (chunking happens later)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for idx, word in enumerate(words, start=1):
+        start = format_srt_timestamp(float(word["start"]))
+        end = format_srt_timestamp(max(float(word["end"]), float(word["start"]) + 0.01))
+        text = str(word.get("word", "")).strip().replace("\r", "").replace("\n", " ")
+        if not text:
+            continue
+        lines.append(str(idx))
+        lines.append(f"{start} --> {end}")
+        lines.append(text)
+        lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def load_word_srt(path) -> List[Dict]:
+    """Parse a word-per-entry SRT into [{start, end, word}]. Returns [] when unusable."""
+    try:
+        parsed = load_srt_file(Path(path))
+    except (OSError, ValueError):
+        return []
+    return [{"start": s["start"], "end": s["end"], "word": s["text"]}
+            for s in parsed.get("segments", [])]
+
+
 def _resolve_device() -> str:
     if LOCAL_WHISPER_DEVICE != "auto":
         return LOCAL_WHISPER_DEVICE
@@ -137,6 +165,13 @@ def transcribe(
                 return cached
             cache_path.unlink(missing_ok=True)
 
+    if word_timestamps and cache_path.exists():
+        words = load_word_srt(cache_path)
+        if words:
+            print(f"[transcribe] reusing cached word timestamps: {cache_path}", flush=True)
+            duration = float(words[-1]["end"]) if words else 0.0
+            return {"duration": duration, "segments": [], "words": words}
+
     if not word_timestamps and auto_subs_path and os.path.isfile(auto_subs_path):
         try:
             subs = load_srt_file(Path(auto_subs_path))
@@ -189,7 +224,8 @@ def transcribe(
     transcript: Dict = {"duration": duration, "segments": segments}
     if word_timestamps:
         transcript["words"] = words
-        print(f"[transcribe] {len(words)} word timestamps", flush=True)
+        _write_word_srt(cache_path, words)
+        print(f"[transcribe] {len(words)} word timestamps → {cache_path}", flush=True)
     else:
         _write_srt(cache_path, transcript)
         print(f"[transcribe] wrote cache: {cache_path}", flush=True)

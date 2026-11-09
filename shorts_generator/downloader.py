@@ -6,6 +6,8 @@ uncapped best video+audio by default, prefer mp4/m4a when available, ffmpeg merg
 import json
 import os
 import re
+import subprocess
+import tempfile
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -21,10 +23,21 @@ _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
-# Clients whose combined formats are fed to yt-dlp at once. 'tv'/'mweb'/'web'
-# expose the full ladder incl. 1440p/4K; 'ios'/'android' add 403-resistant
-# fallbacks. yt-dlp aggregates all of them and picks the highest-quality format.
-_DEFAULT_PLAYER_CLIENTS = ("tv", "mweb", "web", "ios", "web_safari", "android")
+# Clients whose combined formats are fed to yt-dlp at once. 'android_vr' and
+# 'web_embedded' expose the full ladder (1440p/4K) even signed-out, so the
+# default never silently degrades to 360p; 'tv'/'mweb'/'web' add auth-tier
+# formats; 'ios'/'android' add 403-resistant fallbacks. yt-dlp aggregates all
+# of them and picks the highest-quality format.
+_DEFAULT_PLAYER_CLIENTS = (
+    "android_vr",
+    "web_embedded",
+    "tv",
+    "mweb",
+    "web",
+    "ios",
+    "web_safari",
+    "android",
+)
 
 
 # Project root (parent of shorts_generator/)
@@ -77,8 +90,12 @@ def _ensure_netscape_cookiefile(path: str) -> str:
     src_mtime = os.path.getmtime(path)
     if not os.path.isfile(cache) or os.path.getmtime(cache) < src_mtime:
         netscape = _json_cookies_to_netscape(_load_json_cookies(path))
-        with open(cache, "w", encoding="utf-8") as f:
+        # Atomic temp+replace: parallel workers must never read a half-written
+        # file (yt-dlp rejects it as "not a Netscape format cookies file").
+        fd, tmp = tempfile.mkstemp(dir=OUTPUT_DIR, prefix=".cookies_netscape.", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(netscape)
+        os.replace(tmp, cache)
     return cache
 
 
@@ -443,6 +460,34 @@ def _existing_download(out_dir: str, video_id: str, fmt: str) -> Optional[str]:
     return None
 
 
+def _min_height_for(fmt: str) -> Optional[int]:
+    """Resolution floor (None = any cache is fine): max→720p, N→N, lowest→None."""
+    key = _normalize_fmt(fmt)
+    if key in _LOW_ALIASES:
+        return None
+    if key in _MAX_ALIASES:
+        return 720
+    try:
+        return int(key)
+    except ValueError:
+        return 720
+
+
+def _probe_height(path: str) -> Optional[int]:
+    """Video height via ffprobe (fast). None when ffprobe is unavailable/error."""
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=height", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            return None
+        return int(proc.stdout.strip().splitlines()[0])
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        return None
+
+
 def download_youtube(
     video_url: str,
     fmt: Optional[str] = None,
@@ -457,10 +502,24 @@ def download_youtube(
     tag = _fmt_tag(fmt)
 
     cached = find_local_source(out_dir, video_id, fmt=fmt)
+    refresh = False
     if cached:
-        print(f"[download] already on disk, skipping download: {cached}", flush=True)
-        info = _load_meta(cached, video_id, video_url=video_url)
-        return cached, info
+        min_h = _min_height_for(fmt)
+        if min_h:
+            cached_h = _probe_height(cached)
+            if cached_h is None:
+                refresh = False  # can't verify; trust the cache
+            elif cached_h < min_h:
+                refresh = True
+                print(
+                    f"[download] cached {os.path.basename(cached)} is only {cached_h}p "
+                    f"(requested ≥{min_h}p) — refreshing at max quality",
+                    flush=True,
+                )
+        if not refresh:
+            print(f"[download] already on disk, skipping download: {cached}", flush=True)
+            info = _load_meta(cached, video_id, video_url=video_url)
+            return cached, info
 
     label = "max" if tag == "max" else f"{tag}p"
     print(f"[download] {video_url} @ {label} → {out_dir}/", flush=True)
@@ -482,7 +541,10 @@ def download_youtube(
     last_err: Optional[Exception] = None
     tried_without_cookies = False
 
-    base_opts = _base_opts(out_dir, fmt, tag, use_cookies=use_cookies)
+    # Refreshing a stale cache: download into a scratch dir, then swap atomically
+    # so a failed refresh leaves the old (usable) file in place.
+    scratch = os.path.join(out_dir, f".refresh_{video_id}") if refresh else out_dir
+    base_opts = _base_opts(scratch, fmt, tag, use_cookies=use_cookies)
     info, path, last_err = _attempt_download(yt_dlp, video_url, base_opts, clients)
 
     if info is None and use_cookies and last_err and _is_cookie_error(last_err):
@@ -494,7 +556,7 @@ def download_youtube(
             flush=True,
         )
         tried_without_cookies = True
-        base_opts = _base_opts(out_dir, fmt, tag, use_cookies=False)
+        base_opts = _base_opts(scratch, fmt, tag, use_cookies=False)
         info, path, last_err = _attempt_download(yt_dlp, video_url, base_opts, clients)
 
     using_cookies = use_cookies and not tried_without_cookies
@@ -507,6 +569,19 @@ def download_youtube(
                 "close it, then retry. Set YTDLP_COOKIES_FROM_BROWSER=edge in .env (default on Windows)."
             )
         raise RuntimeError(f"download failed for {video_url}: {last_err}{hint}")
+
+    if refresh:
+        try:
+            os.replace(path, cached)
+            path = cached
+            meta_new = _meta_path(path)
+            meta_old = _meta_path(cached)
+            if os.path.isfile(meta_new):
+                os.replace(meta_new, meta_old)
+        finally:
+            import shutil
+
+            shutil.rmtree(scratch, ignore_errors=True)
 
     _save_meta(path, info)
     height = info.get("height")
@@ -569,6 +644,51 @@ def fetch_auto_subs(
     for name in sorted(os.listdir(out_dir)):
         if name.startswith(prefix) and name.endswith((".srt", ".vtt")):
             return os.path.join(out_dir, name)
+    return None
+
+
+def download_audio(
+    video_url: str,
+    out_dir: Optional[str] = None,
+    video_id: Optional[str] = None,
+) -> Optional[str]:
+    """Download the best audio-only stream, preferring m4a (native AAC). Cached.
+
+    The file lands at ``<out_dir>/<video_id>.m4a`` (or ``.webm`` when YouTube
+    serves no m4a), so re-runs are a no-op. Returns None on any failure.
+    """
+    video_id = video_id or extract_youtube_video_id(video_url)
+    if not video_id:
+        return None
+    out_dir = out_dir or OUTPUT_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    for ext in ("m4a", "webm", "mp4"):
+        cached = os.path.join(out_dir, f"{video_id}.{ext}")
+        if os.path.isfile(cached):
+            return cached
+
+    yt_dlp = _import_ytdlp()
+    opts: Dict = {
+        "format": "bestaudio[ext=m4a]/bestaudio",
+        "outtmpl": os.path.join(out_dir, f"{video_id}.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "http_headers": {"User-Agent": _USER_AGENT},
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 3,
+        "socket_timeout": 30,
+    }
+    opts.update(_auth_opts())
+    info, path, _err = _attempt_download(yt_dlp, video_url, opts, list(_player_clients()))
+    if path and os.path.isfile(path):
+        return path
+    if path:
+        stem, _ = os.path.splitext(path)
+        for ext in (".m4a", ".webm", ".mp4", ".opus"):
+            if os.path.isfile(stem + ext):
+                return stem + ext
     return None
 
 

@@ -35,18 +35,26 @@ gpu = ["torch>=2.0"]
 gui = ["PySide6>=6.6"]
 tiktok = ["curl-cffi>=0.9"]  # yt-dlp impersonation — much more reliable TikTok extraction
 shorts = ["opencv-python-headless>=4.8"]  # face-aware 9:16 cropping
+faceswap = [
+    "onnxruntime-directml>=1.20; sys_platform == 'win32'",  # GPU via DirectX 12 (no CUDA toolkit)
+    "onnxruntime>=1.18; sys_platform != 'win32'",
+    "onnx>=1.15",  # inswapper latent-projection matrix extraction
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+]  # local face swap
 upload = ["google-api-python-client>=2.100", "google-auth-oauthlib>=1.0"]  # YouTube upload
 
 [project.scripts]
 clipclipper = "main:main"
 clipclipper-gui = "studio_app.app:main"
+clipclipper-faceswap = "shorts_generator.faceswap:main"
 
 [project.urls]
 Homepage = "https://github.com/DontHash/Optimized-AI-ShortsGenerator"
 
 [tool.setuptools]
-py-modules = ["main", "captions"]
-packages = ["shorts_generator", "eval", "studio_app"]
+py-modules = ["main", "captions", "transcripts"]
+packages = ["shorts_generator", "shorts_generator.faceswap", "eval", "studio_app"]
 
 [tool.ruff]
 line-length = 120

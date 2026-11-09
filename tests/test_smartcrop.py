@@ -54,6 +54,26 @@ def test_compute_crop_window_landscape():
     assert win2["x"] == 1920 - 607  # right edge
 
 
+def test_compute_crop_window_centers_face():
+    win = compute_crop_window(1920, 1080, 1080, 1920, 0.5)
+    center = win["x"] + win["w"] / 2
+    assert abs(center - 960) <= 2  # face center, not the old edge formula
+
+
+def test_plan_crop_rebases_absolute_samples_to_clip_time():
+    # sample_faces returns absolute source time; origin=100 makes it clip-relative
+    samples = [(100.0 + i * 0.5, 0.5, 0.4, 0.1) for i in range(21)]
+    segments = plan_crop_segments(samples, 10.0, origin=100.0)
+    assert segments
+    assert segments[0][0] == pytest.approx(0.0)
+    assert segments[-1][1] == pytest.approx(10.0)
+
+
+def test_plan_crop_ignores_samples_outside_clip():
+    samples = [(0.0, 0.2, 0.4, 0.1), (50.0, 0.8, 0.4, 0.1)]
+    assert plan_crop_segments(samples, 10.0, origin=50.0)[0][2] > 0.5
+
+
 def test_compute_crop_window_portrait():
     win = compute_crop_window(1080, 1920, 1080, 1920, 0.5)
     assert win["w"] == 1080 and win["h"] == 1920  # already 9:16, no crop

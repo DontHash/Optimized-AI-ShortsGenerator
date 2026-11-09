@@ -34,7 +34,8 @@ The pipeline runs **locally** — `yt-dlp`, `faster-whisper`, and Gemini (free t
 - **SponsorBlock exclusion** — sponsor/intro/outro segments are fetched and clips landing inside them are dropped
 - **Caching** — re-runs reuse download, transcript, audio curve, and heatmap; skip completed videos unless `--force`
 - **Batch queue** — multiple URLs or a `.txt` file; parallel workers (2× speed on multi-video runs); summary in `output/queue_report.json`
-- **Desktop studio (GUI)** — native PySide6 app: drag-and-drop URLs, live pipeline log, per-clip cards with signal breakdown, render/preview actions
+- **Desktop studio (GUI)** — native PySide6 app with a tool hub: *Shorts Creator*, *TikTok Downloader*, and *Face Swap* pages, sidebar navigation, live console drawer, and drag-and-drop queues
+- **Face swap (local)** — swap a face from one photo into any single-person video with ONNX (CUDA/DirectML GPU acceleration); nothing is uploaded
 - **Optional render** — ffmpeg cuts at source aspect ratio (no vertical crop, no third-party video API)
 - **Captions helper** — SRT, karaoke ASS, optional burn-in via `captions.py`
 
@@ -140,7 +141,7 @@ output/<video_id>/
 }
 ```
 
-- **`score`** — fused 0–100 rank used for ordering  
+- **`score`** — fused 0–100 relative rank used for ordering (best clip in a video is 100, so compare within a video, not across videos)  
 - **`llm_score`** — raw model score before fusion  
 - **`signals`** — which inputs contributed and how  
 
@@ -187,15 +188,18 @@ pip install -e .[gui]        # or: pip install PySide6
 python -m studio_app         # or: clipclipper-gui
 ```
 
-- **Drag and drop** — drop `urls.txt` files or pasted YouTube URLs straight into the queue; drag rows to reorder
-- **Two modes** — *YouTube Clips* (rank + download) or *TikTok Download* (watermark-free video + title + thumbnail + stats, no ranking)
+The window is a **tool hub**: a sidebar with *Home, Shorts Creator, TikTok Downloader, Face Swap, Console, Settings* (Ctrl+1–5 / Ctrl+`) and animated page transitions.
+
+- **Home hub** — tool cards for each module with a one-click launch
+- **Drag and drop** — drop `urls.txt` files or pasted video URLs straight into a queue; drag rows to reorder
+- **Three tools** — *Shorts Creator* (YouTube rank + render), *TikTok Downloader* (watermark-free), *Face Swap* (local ONNX)
 - **Parallel processing** — the queue runs 2 videos at once (downloads are network-bound); Stop cancels cleanly
-- **Live pipeline log** — every `[download]` / `[transcribe]` / `[signals]` line streams into the Log tab
-- **Preview player** — embedded playback of the source video, seeking straight to a clip
-- **Queue persistence** — your queue and mode survive restarts (`output/studio_queue.json`)
+- **Live console drawer** — every `[download]` / `[transcribe]` / `[signals]` line streams into a filterable bottom console (Ctrl+`)
+- **Preview player** — embedded playback with volume, mute, and fullscreen; seeks straight to a clip
+- **Queue persistence** — each tool's queue survives restarts (`output/studio_queue_youtube.json` / `studio_queue_tiktok.json`)
 - **Per-clip cards** — score badge, hook, virality reason, transcript excerpt, LLM/replay/audio/chapter signal bars, and actions: *Render Short 9:16*, *Render MP4*, *Preview*, *Open in YouTube*, *Copy Upload Text*
 - **Thumbnails** — YouTube and TikTok result cards show the video thumbnail + title
-- **Settings tab** — edits the same `.env` knobs the CLI uses, applied on the next run
+- **Settings page** — edits the same `.env` knobs the CLI uses; queue options apply on the next run, render/transcription changes after an app restart
 
 ### Shorts creator (9:16)
 
@@ -206,8 +210,10 @@ Turn clips into ready-to-post vertical shorts:
   falls back to center crop when no faces. `pip install -e .[shorts]`
 - **One-click** — *Render Short 9:16* on any clip card (or *Render all as Shorts*);
   produces `output/<video_id>/<rank>_<name>_short.mp4` with fades + loudnorm
-- **Captions** — burn transcript captions onto the short (Settings → *burn captions*)
-- **Thumbnail** — hook frame extracted to `<rank>_<name>_short.jpg`
+- **Captions** — burn word-level ASS captions when a `.words.srt` cache exists,
+  otherwise sentence-level cues; 1080×1920 layout, bottom safe zone, karaoke
+  highlight, and a single final loudness pass (Settings → *burn captions*)
+- **Thumbnail** — vertical cover frame extracted from the rendered short to `<rank>_<name>_short.jpg`
 - **Compile Short** — stitch all rendered shorts into one video, optional background
   music (checkbox → pick an mp3)
 - **Upload to YouTube** — OAuth upload of the compiled short (`pip install -e .[upload]`;
@@ -217,7 +223,7 @@ Turn clips into ready-to-post vertical shorts:
 
 ### TikTok downloads (no watermark)
 
-Select **TikTok Download** in the Studio queue, drop TikTok video URLs, and each is saved to
+Select **TikTok Downloader** in the Studio sidebar, drop TikTok video URLs, and each is saved to
 `output/tiktok/<video_id>/` with the title, author, view/like/comment counts and thumbnail.
 
 - Watermark-free: selects yt-dlp formats that skip TikTok's watermarked `download` format
@@ -227,6 +233,26 @@ Select **TikTok Download** in the Studio queue, drop TikTok video URLs, and each
 - TikTok rate-limits aggressively; the queue paces itself with a configurable
   per-video delay (Settings → *TikTok pacing*, default 8s) and retries once
   with backoff; failed downloads report per video
+
+### Face swap (local, single-person)
+
+Swap a face from one photo into any single-person video — fully on your machine:
+
+```bash
+pip install -e .[faceswap]                 # onnxruntime-directml on Windows (GPU via DirectX 12)
+python -m shorts_generator.faceswap video.mp4 face.jpg -o out.mp4 --device auto
+clipclipper-faceswap video.mp4 face.jpg -o out.mp4
+```
+
+- **Inputs** — a video file and a clear, front-facing reference photo; the largest face in each
+  frame is swapped, frames without a face pass through untouched
+- **Local ONNX pipeline** — SCRFD detection → ArcFace embedding → inswapper_128 swap; models
+  (~850 MB) download once into `models/faceswap/` on first use (gitignored)
+- **GPU acceleration** — `auto` picks CUDA or DirectML automatically; on a typical laptop GPU
+  a 60 s short processes in minutes instead of half an hour of CPU (tested ~6× faster)
+- **Faithful output** — original fps, resolution, and audio are preserved (ffmpeg mux);
+  per-frame progress, live preview, and cancel in the Studio UI
+- Results land in `output/faceswap/` with stats and a one-click *Open File*
 
 ## Captions
 
@@ -239,7 +265,11 @@ python captions.py clip1.mp4 clip2.mp4 --burn
 
 Produces `.srt` (editors) and styled `.ass` (karaoke highlight). `--burn` hard-burns ASS via ffmpeg.
 
-Environment: `CAPTION_FONT`, `CAPTION_FONT_SIZE`, `CAPTION_HIGHLIGHT_COLOR`, `CAPTION_MAX_WORDS`.
+Environment: `CAPTION_FONT`, `CAPTION_FONT_SIZE`, `CAPTION_HIGHLIGHT_COLOR`, `CAPTION_MAX_WORDS`, `CAPTION_MAX_CHARS`, `CAPTION_MARGIN_V`.
+
+## Transcripts (YouTube captions only)
+
+`python transcripts.py urls.txt --langs ne` — YouTube's own captions (Nepali/Devanagari supported) → `output/transcripts/<id>.srt` + `.txt` (no Whisper).
 
 ## Configuration
 
@@ -280,7 +310,7 @@ flowchart LR
 2. Transcribe (cached) — YouTube auto-captions when available, else faster-whisper
 3. Collect replay heatmap, chapters, audio energy, semantic boundaries, SponsorBlock segments
 4. LLM ranks candidate moments (hinted by peaks and structure; classifies content in the same call)
-5. Fuse signals into a calibrated per-video score; expand peaks for setup → payoff
+5. Fuse signals into a calibrated per-video score (relative rank); expand peaks for setup → payoff
 6. Dedupe by time and transcript similarity; drop clips inside sponsor segments; snap to sentence boundaries
 7. Write `clips.json` (+ sidecar JSON); optionally `--render` cuts
 
@@ -299,13 +329,18 @@ main.py                   Clip-finding CLI
 captions.py               Standalone captions CLI
 studio_app/               Desktop GUI (PySide6, optional: pip install -e .[gui])
   app.py                  QApplication entry + env bootstrap
-  main_window.py          Queue + results + settings + log layout
-  pipeline_worker.py      QThread queue runner with live log capture
-  tiktok_worker.py        QThread TikTok downloader runner
-  queue_list.py           Drag-and-drop URL queue + YouTube/TikTok mode
+  main_window.py          Shell: sidebar nav + tool pages + console drawer
+  nav_sidebar.py          Icon rail with animated active indicator
+  home_page.py            Tool hub (Shorts Creator / TikTok / Face Swap)
+  shorts_creator_page.py  YouTube queue + ranked results + preview pane
+  tiktok_page.py          Watermark-free TikTok downloads
+  faceswap_page.py        Face swap jobs with live progress + preview
+  queue_list.py           Drag-and-drop URL queue (per tool)
   clip_card.py            Clip + TikTok result cards, thumbnails, background render
   settings_panel.py       .env settings editor
-  theme.py                Dark professional stylesheet
+  theme.py                Dark professional stylesheet (palette + QSS)
+  icons.py                Inline SVG icons (runtime-rendered)
+  widgets.py              Shared: spinner, empty states, page headers
 requirements.txt
 .env.example
 docs/UPLIFT_PLAN.md      Signal fusion design + validation notes
@@ -323,6 +358,10 @@ shorts_generator/
   clipper.py              ffmpeg cut (no crop)
   captions.py             SRT / ASS / burn
   config.py
+  faceswap/               Local face-swap engine (ONNX)
+    models.py             Model download + verification
+    scrfd.py              SCRFD detection decode (pure numpy)
+    pipeline.py           Detect -> embed -> swap -> ffmpeg mux
 ```
 
 ## License

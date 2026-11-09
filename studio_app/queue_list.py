@@ -1,7 +1,7 @@
 """URL queue list with drag-and-drop: drop .txt files or pasted URLs in,
 drag rows to reorder. Items show the video thumbnail + title (fetched
 lazily in a background thread, cached on disk) instead of the raw URL.
-Persists the queue to output/studio_queue.json."""
+Persists each tool's queue to output/studio_queue_<mode>.json."""
 import hashlib
 import json
 import os
@@ -13,7 +13,6 @@ from PySide6.QtCore import Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -24,6 +23,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from .theme import ACCENT, BG_RAISED, TEXT_DIM, TEXT_FAINT
 
 _URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _CACHE_TTL_SECONDS = 30 * 24 * 3600  # refresh titles/thumbnails after 30 days
@@ -77,7 +78,7 @@ class QueueItemWidget(QWidget):
         self.thumb = QLabel()
         self.thumb.setFixedSize(80, 45)
         self.thumb.setAlignment(Qt.AlignCenter)
-        self.thumb.setStyleSheet("background-color:#14151a; border-radius:4px;")
+        self.thumb.setStyleSheet(f"background-color:{BG_RAISED}; border-radius:4px;")
         lay.addWidget(self.thumb, 0, Qt.AlignVCenter)
 
         text_col = QVBoxLayout()
@@ -90,16 +91,16 @@ class QueueItemWidget(QWidget):
         row = QHBoxLayout()
         row.setSpacing(6)
         self.badge = QLabel("YouTube")
-        self.badge.setStyleSheet("color:#6c8cff; font-size:10px;")
+        self.badge.setStyleSheet(f"color:{ACCENT}; font-size:10px;")
         row.addWidget(self.badge)
         self.duration = QLabel("")
-        self.duration.setStyleSheet("color:#9aa0b0; font-size:10px;")
+        self.duration.setStyleSheet(f"color:{TEXT_DIM}; font-size:10px;")
         row.addWidget(self.duration)
         row.addStretch(1)
         text_col.addLayout(row)
 
         self.url_label = QLabel("")
-        self.url_label.setStyleSheet("color:#6a7080; font-size:10px;")
+        self.url_label.setStyleSheet(f"color:{TEXT_FAINT}; font-size:10px;")
         text_col.addWidget(self.url_label)
         lay.addLayout(text_col, 1)
 
@@ -186,7 +187,7 @@ class QueueList(QListWidget):
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.InternalMove)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.setToolTip("Drop urls.txt or paste YouTube URLs")
+        self.setToolTip("Drop urls.txt or paste video URLs")
         self.itemDoubleClicked.connect(self._open_item)
 
     # -- data ------------------------------------------------------------ #
@@ -265,20 +266,22 @@ class QueueList(QListWidget):
 
 
 class SourcePanel(QWidget):
-    """Left-side panel: mode switch, URL input, queue list, run controls."""
+    """Tool-side panel: URL input, queue list, run controls for one mode."""
 
     start_requested = Signal()
     stop_requested = Signal()
     urls_changed = Signal()
-    mode_changed = Signal(str)  # "youtube" | "tiktok"
 
-    MODES = [("youtube", "YouTube Clips (rank + download)"), ("tiktok", "TikTok Download (no watermark)")]
-
-    def __init__(self, parent=None):
+    def __init__(self, mode: str = "youtube", title: str = "Source queue",
+                 subtitle: str = "Drop YouTube URLs or a urls.txt file", parent=None):
         super().__init__(parent)
         self.setObjectName("panel")
+        self._mode = mode
+        self._panel_title = title
+        self._panel_subtitle = subtitle
         self._out_root = Path(os.getenv("LOCAL_OUTPUT_DIR") or "output")
-        self._queue_path = self._out_root / "studio_queue.json"
+        # One queue per tool: YouTube and TikTok must not overwrite each other.
+        self._queue_path = self._out_root / f"studio_queue_{mode}.json"
         self._cache_path = self._out_root / "studio_queue_cache.json"
         self._thumb_dir = self._out_root / ".queue_thumbs"
         self._meta_cache = self._load_cache()
@@ -341,17 +344,24 @@ class SourcePanel(QWidget):
             pass
 
     def _restore_queue(self):
-        try:
-            if not self._queue_path.is_file():
-                return
-            state = json.loads(self._queue_path.read_text(encoding="utf-8"))
-            mode = state.get("mode")
-            for i, (value, _label) in enumerate(self.MODES):
-                if value == mode:
-                    self.mode_combo.setCurrentIndex(i)
-            self.queue.add_urls([u for u in state.get("urls", []) if u])
-        except (OSError, ValueError):
-            pass
+        candidates = [self._queue_path]
+        legacy = self._out_root / "studio_queue.json"
+        if not self._queue_path.is_file() and legacy.is_file():
+            candidates.append(legacy)
+        for path in candidates:
+            try:
+                state = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            saved_mode = state.get("mode")
+            if saved_mode and saved_mode != self._mode:
+                continue
+            urls = [u for u in state.get("urls", []) if u]
+            if urls:
+                self.queue.add_urls(urls)
+                if path != self._queue_path:
+                    self._save_queue()
+            return
 
     def _persist_hook(self):
         self.urls_changed.emit()
@@ -363,22 +373,19 @@ class SourcePanel(QWidget):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
-        title = QLabel("ClipClipper Studio")
-        title.setObjectName("h1")
+        title = QLabel(self._panel_title)
+        title.setObjectName("h2")
         layout.addWidget(title)
-        self.subtitle = QLabel("Drop YouTube URLs or a urls.txt file")
+        self.subtitle = QLabel(self._panel_subtitle)
         self.subtitle.setObjectName("dim")
         layout.addWidget(self.subtitle)
 
-        self.mode_combo = QComboBox()
-        for value, label in self.MODES:
-            self.mode_combo.addItem(label, value)
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        layout.addWidget(self.mode_combo)
-
         input_row = QHBoxLayout()
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Paste a YouTube URL…")
+        tiktok = self._mode == "tiktok"
+        self.url_input.setPlaceholderText(
+            "Paste a TikTok video URL…" if tiktok else "Paste a YouTube URL…"
+        )
         self.url_input.returnPressed.connect(self._add_from_input)
         add_btn = QPushButton("Add")
         add_btn.clicked.connect(self._add_from_input)
@@ -421,17 +428,7 @@ class SourcePanel(QWidget):
         self._refresh_count()
 
     def mode(self) -> str:
-        return self.mode_combo.currentData() or "youtube"
-
-    def _on_mode_changed(self):
-        tiktok = self.mode() == "tiktok"
-        self.url_input.setPlaceholderText("Paste a TikTok video URL…" if tiktok else "Paste a YouTube URL…")
-        self.subtitle.setText(
-            "Drop TikTok video URLs (no watermark — no ranking)" if tiktok
-            else "Drop YouTube URLs or a urls.txt file"
-        )
-        self._save_queue()
-        self.mode_changed.emit(self.mode())
+        return self._mode
 
     def _refresh_count(self):
         n = self.queue.count()
@@ -461,3 +458,9 @@ class SourcePanel(QWidget):
         self.stop_btn.setEnabled(running)
         self.url_input.setEnabled(not running)
         self.file_btn.setEnabled(not running)
+
+    def shutdown(self):
+        """Stop background metadata fetching before the window closes."""
+        if self._meta_worker and self._meta_worker.isRunning():
+            self._meta_worker.cancel()
+            self._meta_worker.wait(3000)

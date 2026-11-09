@@ -21,3 +21,6 @@ graphify-out/
 
 # Pipeline runs (clips.json, transcripts, etc.)
 output/
+
+# Face swap ONNX models (downloaded on first use, ~850 MB)
+models/

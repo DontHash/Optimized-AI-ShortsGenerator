@@ -112,6 +112,39 @@ def choose_track(
     return None
 
 
+def _cached_caption(out_dir: str, prefix: str, langs: Optional[List[str]]) -> Optional[str]:
+    """Return a cached caption file, but only for a requested language.
+
+    ``None`` when a language filter was given and no cached file matches it —
+    the caller should fetch instead of silently reusing another language.
+    """
+    wanted = {base_language(lang) for lang in (langs or []) if base_language(lang)}
+    fallback = None
+    plain = None
+    try:
+        names = sorted(os.listdir(out_dir))
+    except OSError:
+        return None
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith((".srt", ".vtt"))):
+            continue
+        path = os.path.join(out_dir, name)
+        if fallback is None:
+            fallback = path
+        if not wanted:
+            return path
+        middle = name[len(prefix):].lstrip(".")
+        if "." not in middle:
+            plain = path
+            continue
+        stem = middle.rsplit(".", 1)[0]
+        parts = stem.split(".")
+        code = parts[-1] if parts else ""
+        if base_language(code) in wanted:
+            return path
+    return plain if wanted else fallback
+
+
 def fetch_source_subs(
     video_url: str,
     out_dir: str,
@@ -120,26 +153,37 @@ def fetch_source_subs(
     langs: Optional[List[str]] = None,
     allow_translated: bool = False,
     cookies_from_browser: Optional[str] = None,
+    cookies_file: Optional[str] = None,
+    info: Optional[Dict] = None,
 ) -> Optional[str]:
     """Download the video's original (or uploaded) caption track as SRT.
 
     Keeps the legacy ``source_<id>_auto.<lang>.srt`` filename so
     :func:`shorts_generator.transcripts._promote_fetched` keeps working.
     Returns the caption path, or ``None`` when no literal track exists.
+
+    Pass an already-fetched yt-dlp ``info`` dict to avoid a second metadata
+    request. Translated tracks are rejected unless ``allow_translated=True``.
     """
     import yt_dlp  # lazy: keeps the module import-safe without the dependency
 
     prefix = f"source_{video_id}_auto"
     os.makedirs(out_dir, exist_ok=True)
-    for name in sorted(os.listdir(out_dir)):
-        if name.startswith(prefix) and name.endswith((".srt", ".vtt")):
-            return os.path.join(out_dir, name)
-
     requested = langs or ([language] if language else None)
+    cached = _cached_caption(out_dir, prefix, requested)
+    if cached:
+        return cached
+
     try:
-        with yt_dlp.YoutubeDL({"skip_download": True, "quiet": True, "no_warnings": True}) as probe:
-            info = probe.extract_info(video_url, download=False)
+        if info is None:
+            with yt_dlp.YoutubeDL({"skip_download": True, "quiet": True, "no_warnings": True}) as probe:
+                info = probe.extract_info(video_url, download=False)
         track = choose_track(info, langs=requested, allow_translated=allow_translated)
+        if track is None and info is not None:
+            # Cached meta.json may not contain caption manifests; probe once.
+            with yt_dlp.YoutubeDL({"skip_download": True, "quiet": True, "no_warnings": True}) as probe:
+                info = probe.extract_info(video_url, download=False)
+            track = choose_track(info, langs=requested, allow_translated=allow_translated)
         if not track:
             return None
 
@@ -155,14 +199,13 @@ def fetch_source_subs(
             "no_warnings": True,
             "noprogress": True,
         }
-        if cookies_from_browser:
+        if cookies_file:
+            opts["cookiefile"] = cookies_file
+        elif cookies_from_browser:
             opts["cookiesfrombrowser"] = (cookies_from_browser,)
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(video_url, download=True)
     except Exception:
         return None
 
-    for name in sorted(os.listdir(out_dir)):
-        if name.startswith(prefix) and name.endswith((".srt", ".vtt")):
-            return os.path.join(out_dir, name)
-    return None
+    return _cached_caption(out_dir, prefix, requested)

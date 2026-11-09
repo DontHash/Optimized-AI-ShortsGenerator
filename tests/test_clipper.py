@@ -1,5 +1,11 @@
 """Tests for shorts_generator.clipper — SRT building (no ffmpeg needed)."""
-from shorts_generator.clipper import _slugify, _srt_timestamp, build_clip_srt
+from shorts_generator.clipper import (
+    _normalize_crop_segments,
+    _slugify,
+    _srt_timestamp,
+    build_clip_srt,
+    chunk_words_to_cues,
+)
 
 
 def test_srt_timestamp_format():
@@ -26,3 +32,28 @@ def test_build_clip_srt_rebases_to_clip(tmp_path):
     assert "cost me everything" in content
     assert "outside the clip" not in content  # outside window dropped
     assert "the big mistake" in content
+
+
+def test_normalize_crop_segments_prepends_intro_and_fills_gaps():
+    out = _normalize_crop_segments([(2.0, 5.0, 0.2), (7.0, 10.0, 0.8)], 12.0)
+    assert out[0][0] == 0.0
+    assert out[0][1] >= 5.0  # intro + first segment (merged when x matches)
+    assert out[-1][1] == 12.0  # tail covered
+    # no gaps
+    for (_, end, _), (start, _, _) in zip(out, out[1:], strict=False):
+        assert abs(end - start) < 1e-6
+
+
+def test_normalize_crop_segments_empty_falls_back_to_center():
+    assert _normalize_crop_segments([], 10.0) == [(0.0, 10.0, 0.5)]
+
+
+def test_chunk_words_to_cues_accepts_text_and_clamps_overlap():
+    words = [
+        {"start": 0.0, "end": 0.5, "text": "one"},
+        {"start": 0.5, "end": 1.0, "text": "two"},
+        {"start": 1.0, "end": 1.5, "text": "three"},
+    ]
+    cues = chunk_words_to_cues(words, max_words=2)
+    assert len(cues) == 2
+    assert cues[0]["end"] <= cues[1]["start"] + 0.001

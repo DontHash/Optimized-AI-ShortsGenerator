@@ -6,26 +6,29 @@ from typing import Dict, List, Optional
 
 from . import rerank
 from . import signals as sig
-from .clipper import render_clips
+from .caption_tracks import fetch_source_subs
+from .clipper import render_clips, render_shorts
 from .config import (
     AUDIO_ENERGY_ENABLED,
     AUTO_SUBS_ENABLED,
     AUTO_SUBS_LANGS,
     DOWNLOAD_FORMAT,
+    MAX_CLIP_SECONDS,
     OUTPUT_DIR,
     SPONSORBLOCK_ENABLED,
+    YTDLP_COOKIES_FILE,
+    YTDLP_COOKIES_FROM_BROWSER,
 )
 from .downloader import (
     download_youtube,
     extract_youtube_video_id,
-    fetch_auto_subs,
     fetch_sponsor_segments,
     fetch_thumbnail,
     find_local_source,
 )
 from .highlights import get_highlights, snap_to_sentence_boundaries, transcript_excerpt
 from .llm import call_llm
-from .transcriber import transcribe
+from .transcriber import load_srt_file, load_word_srt, transcribe
 
 
 def _slugify(title: str) -> str:
@@ -39,6 +42,32 @@ def format_hms(seconds: float) -> str:
     m = int((seconds % 3600) // 60)
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:04.1f}"
+
+
+def _cached_segments(video_dir: str) -> List[Dict]:
+    """Cached transcript for a re-run: prefer word-level, then source SRT."""
+    try:
+        names = sorted(os.listdir(video_dir))
+    except OSError:
+        return []
+    word_srt = next((n for n in names if n.endswith(".words.srt")), None)
+    if word_srt:
+        words = load_word_srt(os.path.join(video_dir, word_srt))
+        if words:
+            return words
+    srt_names = [
+        n for n in names
+        if n.endswith(".srt") and not n.endswith(".words.srt") and not n.endswith("_short.srt")
+    ]
+    srt_names.sort(key=lambda n: (not n.startswith("source_"), n))
+    for name in srt_names:
+        try:
+            loaded = load_srt_file(os.path.join(video_dir, name))
+        except (OSError, ValueError):
+            continue
+        if loaded.get("segments"):
+            return loaded["segments"]
+    return []
 
 
 def _build_clips_payload(
@@ -110,17 +139,55 @@ def find_clips(
         print(f"[pipeline] skipping (exists): {clips_json_path}  (use --force to redo)", flush=True)
         with open(clips_json_path, encoding="utf-8") as f:
             payload = json.load(f)
-        if render and not any(c.get("clip_path") for c in payload.get("clips", [])):
-            source_path = find_local_source(
-                video_dir, video_id, fmt=download_format or DOWNLOAD_FORMAT
-            )
-            if not source_path:
-                source_path, _info = download_youtube(
-                    youtube_url, fmt=download_format or DOWNLOAD_FORMAT, out_dir=video_dir
+        clips = payload.get("clips", [])
+        changed = False
+        source_path = ""
+        if shorts:
+            missing = [
+                c for c in clips
+                if not (c.get("short_path") and os.path.isfile(str(c.get("short_path"))))
+            ]
+            if missing:
+                source_path = find_local_source(
+                    video_dir, video_id, fmt=download_format or DOWNLOAD_FORMAT
                 )
-            payload["clips"] = render_clips(
-                source_path, payload["clips"], out_dir=video_dir, accurate=accurate_cut
-            )
+                if not source_path:
+                    source_path, _info = download_youtube(
+                        youtube_url, fmt=download_format or DOWNLOAD_FORMAT, out_dir=video_dir
+                    )
+                segments = _cached_segments(video_dir)
+                rendered = {
+                    int(c.get("rank", 0)): render_shorts(source_path, c, video_dir, segments)
+                    for c in missing
+                }
+                payload["clips"] = [
+                    rendered.get(int(c.get("rank", 0)), c) for c in clips
+                ]
+                changed = True
+        elif render:
+            missing = [
+                c for c in clips
+                if not (c.get("clip_path") and os.path.isfile(str(c.get("clip_path"))))
+            ]
+            if missing:
+                source_path = find_local_source(
+                    video_dir, video_id, fmt=download_format or DOWNLOAD_FORMAT
+                )
+                if not source_path:
+                    source_path, _info = download_youtube(
+                        youtube_url, fmt=download_format or DOWNLOAD_FORMAT, out_dir=video_dir
+                    )
+                rendered = {
+                    int(c.get("rank", 0)): c
+                    for c in render_clips(
+                        source_path, missing, out_dir=video_dir, accurate=accurate_cut
+                    )
+                }
+                payload["clips"] = [
+                    rendered.get(int(c.get("rank", 0)), c) for c in clips
+                ]
+                changed = True
+        if changed:
             with open(clips_json_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
         return payload
@@ -137,11 +204,18 @@ def find_clips(
     auto_subs_path = None
     if AUTO_SUBS_ENABLED:
         sub_langs = [language] if language else AUTO_SUBS_LANGS
-        auto_subs_path = fetch_auto_subs(
-            youtube_url, video_dir, video_id, language=language, langs=sub_langs
+        auto_subs_path = fetch_source_subs(
+            youtube_url,
+            video_dir,
+            video_id,
+            language=language,
+            langs=sub_langs,
+            cookies_from_browser=YTDLP_COOKIES_FROM_BROWSER or None,
+            cookies_file=YTDLP_COOKIES_FILE or None,
+            info=info,
         )
         if not auto_subs_path:
-            print("[transcribe] no YouTube auto-captions found; falling back to faster-whisper", flush=True)
+            print("[transcribe] no YouTube captions found; falling back to faster-whisper", flush=True)
     transcript = transcribe(
         source_path,
         language=language,
@@ -198,6 +272,13 @@ def find_clips(
     ranked = rerank.fuse(all_highlights, heatmap, chapters, energy)
     ranked = rerank.expand_for_context(ranked, segments, heatmap, energy)
     ranked = snap_to_sentence_boundaries(ranked, segments)
+    # Boundary snap can extend past the expansion guard; enforce the cap after
+    # snapping so a short never silently exceeds MAX_CLIP_SECONDS.
+    for h in ranked:
+        start = float(h["start_time"])
+        end = float(h["end_time"])
+        if end - start > MAX_CLIP_SECONDS:
+            h["end_time"] = start + MAX_CLIP_SECONDS
     ranked = rerank.dedupe_semantic(ranked)
     if SPONSORBLOCK_ENABLED:
         sponsor_segments = fetch_sponsor_segments(video_id)
@@ -216,8 +297,7 @@ def find_clips(
             segments, float(h["start_time"]), float(h["end_time"])
         )
     if min_score > 0:
-        filtered = [h for h in ranked if int(h.get("score", 0)) >= min_score]
-        ranked = filtered or ranked[:1]  # never return empty if we had candidates
+        ranked = [h for h in ranked if int(h.get("score", 0)) >= min_score]
 
     duration = float(transcript.get("duration") or info.get("duration") or 0)
     payload = _build_clips_payload(
@@ -230,7 +310,7 @@ def find_clips(
     )
     payload["thumbnail_path"] = thumbnail_path
 
-    if render:
+    if render and not shorts:
         print(f"[pipeline] rendering {len(payload['clips'])} clips", flush=True)
         payload["clips"] = render_clips(
             source_path, payload["clips"], out_dir=video_dir, accurate=accurate_cut
@@ -240,8 +320,11 @@ def find_clips(
         print(f"[pipeline] rendering {len(payload['clips'])} shorts (9:16)", flush=True)
         from .clipper import render_all_shorts
 
+        # Prefer word-level cues when a word cache exists; sentence segments
+        # still produce readable ASS captions.
+        render_segments = _cached_segments(video_dir) or segments
         payload["clips"] = render_all_shorts(
-            source_path, payload["clips"], out_dir=video_dir, transcript_segments=segments
+            source_path, payload["clips"], out_dir=video_dir, transcript_segments=render_segments
         )
 
     with open(clips_json_path, "w", encoding="utf-8") as f:

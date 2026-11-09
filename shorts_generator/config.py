@@ -8,7 +8,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 # Free-first default: Gemini has a free tier; OpenAI does not.
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
 
@@ -66,9 +66,11 @@ else:
 
 # Captions style
 CAPTION_FONT = os.getenv("CAPTION_FONT", "Arial")
-CAPTION_FONT_SIZE = int(os.getenv("CAPTION_FONT_SIZE", "48"))
+CAPTION_FONT_SIZE = int(os.getenv("CAPTION_FONT_SIZE", "72"))
 CAPTION_HIGHLIGHT_COLOR = os.getenv("CAPTION_HIGHLIGHT_COLOR", "&H0000FFFF")  # ASS BGR yellow
 CAPTION_MAX_WORDS = int(os.getenv("CAPTION_MAX_WORDS", "3"))
+CAPTION_MAX_CHARS = int(os.getenv("CAPTION_MAX_CHARS", "24"))
+CAPTION_MARGIN_V = int(os.getenv("CAPTION_MARGIN_V", "360"))  # bottom safe zone (1080x1920)
 
 BOUNDARY_PAD_SECONDS = float(os.getenv("BOUNDARY_PAD_SECONDS", "0.3"))
 
@@ -113,6 +115,7 @@ SHORTS_HEIGHT = int(os.getenv("SHORTS_HEIGHT", "1920"))
 SHORTS_FPS = int(os.getenv("SHORTS_FPS", "30"))
 SHORTS_CRF = int(os.getenv("SHORTS_CRF", "20"))
 SHORTS_FADE_SECONDS = float(os.getenv("SHORTS_FADE_SECONDS", "0.5"))
+SHORTS_MAX_UPSCALE = float(os.getenv("SHORTS_MAX_UPSCALE", "3.0"))
 SHORTS_CAPTIONS = os.getenv("SHORTS_CAPTIONS", "true").strip().lower() != "false"
 SHORTS_FACE_CROP = os.getenv("SHORTS_FACE_CROP", "true").strip().lower() != "false"
 SHORTS_FACE_MAX_DETECT = int(os.getenv("SHORTS_FACE_MAX_DETECT", "400"))

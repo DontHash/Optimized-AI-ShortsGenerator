@@ -99,7 +99,7 @@ def main() -> int:
         download_format=args.format or DOWNLOAD_FORMAT,
         language=args.language,
         min_score=args.min_score,
-        render=args.render or args.shorts,
+        render=args.render,
         accurate_cut=args.accurate_cut,
         force=args.force,
         shorts=args.shorts,

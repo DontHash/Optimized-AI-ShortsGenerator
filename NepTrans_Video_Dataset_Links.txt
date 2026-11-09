@@ -1,0 +1,86 @@
+import shutil
+
+file_content = """================================================================================
+NepTrans Dataset Collection: YouTube Video Links & Channel Guide
+================================================================================
+
+Category 1: Casual Friends/Family Conversation
+--------------------------------------------------------------------------------
+Traits: Natural Nepali, interruptions, slang, short responses, spontaneous banter.
+• Video: On Air With Sanjay #788 - Nasty
+  Link: https://www.youtube.com/watch?v=dgqTZjdbyl8
+
+
+Category 2: Technology and Education
+--------------------------------------------------------------------------------
+Traits: Strong Nepali–English code-switching, technical vocabulary, specs.
+• Channel: GadgetByte Nepali Reviews
+  Link: https://www.youtube.com/@GadgetByteNepali
+• Video: This Is Why GadgetByte Doesn't Do Paid Reviews! (Sushant Pradhan Podcast)
+  Link: https://www.youtube.com/watch?v=dDfihYHbjxQ
+
+
+Category 3: Workplace or Student Meeting
+--------------------------------------------------------------------------------
+Traits: Multiple speakers, rapid turns, task-oriented agenda language.
+• Video: The Doers Nepal Ep. 267: How to Attract Top Talents in Nepal
+  Link: https://www.youtube.com/watch?v=JUszNovfOdc
+• Video: On Air With Sanjay #741 - Climate & Environment Panel
+  Link: https://www.youtube.com/watch?v=Rd6kWsz3PmA
+
+
+Category 4: Business and Finance
+--------------------------------------------------------------------------------
+Traits: High occurrence of numbers, dates, currencies (NPR/USD), financial terms.
+• Video: The REAL Secrets of Business in Nepal (The Doers EP 280)
+  Link: https://www.youtube.com/watch?v=wcbeMceZc-E
+• Video: Private Equity & Startup Funding in Nepal (The Doers Ep. 84)
+  Link: https://music.youtube.com/podcast/c1SBNp6twD8
+
+
+Category 5: Entertainment and Sports
+--------------------------------------------------------------------------------
+Traits: Fast tempo, emotional speech, pop-culture slang, athlete/actor names.
+• Video: On Air With Sanjay #775 - Nima Rumba
+  Link: https://www.youtube.com/watch?v=mX3abQxiy0k
+• Channel: Hamro Khelkud (Live Sports Commentary & Analysis)
+  Link: https://www.youtube.com/@HamroKhelkud
+
+
+Category 6: Travel and Local Services
+--------------------------------------------------------------------------------
+Traits: Place names, directions, pricing, regional accents, teahouse descriptions.
+• Video Series: Herne Katha (Documentary Web Series)
+  Link: https://sewapoint.com/blogs/popular-informative-youtube-channels-of-nepal
+• Video: Tourism Industry & Logistics (The Doers Ep 274)
+  Link: https://www.youtube.com/watch?v=xp3xZXTFR9w
+• Video: First Time in Nepal? Manaslu Trek (Magical Nepal Podcast Ep. 01)
+  Link: https://www.youtube.com/watch?v=C4iwCOfMtl8
+
+
+Category 7: Health Conversation
+--------------------------------------------------------------------------------
+Traits: Specialized medical terminology embedded in colloquial Nepali explanation.
+• Video: Doctor Saathi: Psychosis (साइकोसिस) के हो?
+  Link: https://www.youtube.com/watch?v=8SDi8se34Xo
+• Video: Doctor Saathi: Diet in Thyroid Problem
+  Link: https://www.youtube.com/watch?v=7nHSHgk1wjU
+
+
+Category 8: Pure Nepali Storytelling (Control Group)
+--------------------------------------------------------------------------------
+Traits: Formal literary Nepali, minimal/zero English loanwords, clear Devanagari.
+• Channel: Saigrace Official (Storytelling & Audio Narration)
+  Link: https://www.youtube.com/@SaigraceOfficial
+• Audio Series: Shruti Sambega (Classic Nepali Audiobooks by Achyut Ghimire)
+  Link: https://www.youtube.com/results?search_query=Shruti+Sambega
+
+
+Category 9: Pure English by Nepali Speakers (Control Group)
+--------------------------------------------------------------------------------
+Traits: Full English conversations spoken by native Nepalis with authentic accents.
+• Video: Small World Series: Nepal (Sun Talks Podcast - ASU ISSC)
+  Link: https://www.youtube.com/watch?v=_ueFodK9TX0
+• Video: First Time in Nepal? (Magical Nepal Podcast Ep. 01 - English Audio)
+  Link: https://www.youtube.com/watch?v=C4iwCOfMtl8
+================================================================================

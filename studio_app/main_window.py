@@ -1,241 +1,241 @@
-"""ClipClipper Studio main window: queue + results + settings + log."""
-import json
+"""ClipClipper Studio main window — nav rail + tool pages + console drawer."""
 import os
+from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QPlainTextEdit,
     QProgressBar,
     QScrollArea,
-    QSplitter,
-    QTabWidget,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from .clip_card import TikTokResult, VideoResult
-from .pipeline_worker import PipelineWorker
-from .preview import PreviewPanel
-from .queue_list import SourcePanel
+from . import icons
+from .home_page import HomePage
+from .nav_sidebar import NavSidebar
 from .settings_panel import SettingsPanel
-from .tiktok_worker import TikTokWorker
+from .shorts_creator_page import ShortsCreatorPage
+from .tiktok_page import TikTokPage
+from .widgets import Spinner
+
+CONSOLE_HEIGHT = 200
 
 
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("ClipClipper Studio — find viral moments")
-        self.resize(1280, 820)
-        self._worker = None
+        self.setWindowTitle("ClipClipper Studio")
+        self.resize(1360, 860)
+        self.setMinimumSize(1000, 640)
         self._results_root = Path(os.getenv("LOCAL_OUTPUT_DIR") or "output")
+        self._busy_pages: dict[QWidget, bool] = {}
+        self._log_lines: deque[str] = deque(maxlen=5000)
         self._build()
+        self._build_shortcuts()
 
+    # -- shell ------------------------------------------------------------- #
     def _build(self):
         central = QWidget()
         self.setCentralWidget(central)
-        root = QHBoxLayout(central)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(10)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        splitter = QSplitter(Qt.Horizontal)
-        root.addWidget(splitter, 1)
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
 
-        # -- left: sources + queue --------------------------------------- #
-        self.sources = SourcePanel()
-        self.sources.start_requested.connect(self._start)
-        self.sources.stop_requested.connect(self._stop)
-        splitter.addWidget(self.sources)
-        splitter.setStretchFactor(0, 0)
+        self.sidebar = NavSidebar()
+        self.sidebar.item_clicked.connect(self._on_nav)
+        body.addWidget(self.sidebar)
 
-        # -- right: results / settings / log ----------------------------- #
-        right = QWidget()
-        right_lay = QVBoxLayout(right)
-        right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.setSpacing(8)
+        self.stack = QStackedWidget()
+        body.addWidget(self.stack, 1)
+        root.addLayout(body, 1)
 
-        self.tabs = QTabWidget()
-        self.results_scroll = QScrollArea()
-        self.results_scroll.setWidgetResizable(True)
-        self.results_scroll.setMinimumWidth(560)
-        self.results_host = QWidget()
-        self.results_lay = QVBoxLayout(self.results_host)
-        self.results_lay.setContentsMargins(2, 8, 8, 8)
-        self.results_lay.setSpacing(10)
-        self.results_lay.addStretch(1)
-        self.results_scroll.setWidget(self.results_host)
-        self.tabs.addTab(self.results_scroll, "Results")
+        self._build_statusbar()
+        self._build_pages()
+        self._build_console()
+        root.addWidget(self._console, 0)
 
+    def _build_pages(self):
+        self.home = HomePage()
+        self.home.tool_launch.connect(self._launch_tool)
+        self.stack.addWidget(self.home)
+
+        self.shorts_page = ShortsCreatorPage(self._results_root)
+        self.tiktok_page = TikTokPage(self._results_root)
+
+        from .faceswap_page import FaceSwapPage
+
+        self.swap_page = FaceSwapPage(self._results_root)
+
+        for page in (self.shorts_page, self.tiktok_page, self.swap_page):
+            page.log.connect(self._log)
+            page.status.connect(self.status_label.setText)
+            page.busy.connect(lambda on, p=page: self._set_busy(p, on))
+
+        self.stack.addWidget(self.shorts_page)
+        self.stack.addWidget(self.tiktok_page)
+        self.stack.addWidget(self.swap_page)
+
+        settings_host = QScrollArea()
+        settings_host.setWidgetResizable(True)
         self.settings = SettingsPanel()
-        self.tabs.addTab(self.settings, "Settings")
+        settings_host.setWidget(self.settings)
+        self.stack.addWidget(settings_host)
 
-        self.preview = PreviewPanel()
-        self.tabs.addTab(self.preview, "Preview")
+        controls = self.settings._controls
+        self.shorts_page.bind_settings(controls)
+        self.tiktok_page.bind_settings(controls)
+        self.swap_page.bind_settings(controls)
+
+    def _build_console(self):
+        self._console = QFrame()
+        self._console.setObjectName("console")
+        self._console.setFixedHeight(CONSOLE_HEIGHT)
+        lay = QVBoxLayout(self._console)
+        lay.setContentsMargins(12, 6, 12, 10)
+        lay.setSpacing(6)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        title = QLabel("Console")
+        title.setObjectName("h3")
+        head.addWidget(title)
+        self.console_filter = QLineEdit()
+        self.console_filter.setPlaceholderText("Filter…")
+        self.console_filter.setClearButtonEnabled(True)
+        self.console_filter.setFixedWidth(220)
+        self.console_filter.textChanged.connect(self._refilter_log)
+        head.addWidget(self.console_filter)
+        head.addStretch(1)
+        clear_btn = QLabel()
+        clear_btn.setPixmap(icons.icon("trash", "#98a0b5", 16).pixmap(16, 16))
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.setToolTip("Clear console")
+        clear_btn.mousePressEvent = lambda e: self._clear_log()
+        head.addWidget(clear_btn)
+        close_btn = QLabel("Hide")
+        close_btn.setObjectName("dim")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.mousePressEvent = lambda e: self._toggle_console(False)
+        head.addWidget(close_btn)
+        lay.addLayout(head)
 
         self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("consoleView")
         self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(2000)
-        self.tabs.addTab(self.log_view, "Log")
-        right_lay.addWidget(self.tabs, 1)
+        self.log_view.setMaximumBlockCount(5000)
+        lay.addWidget(self.log_view, 1)
+        self._console.hide()
 
-        # -- status bar --------------------------------------------------- #
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 0)  # busy indicator while running
-        self.progress.setVisible(False)
-        self.progress.setFixedWidth(220)
-        self.status_label = QLabel("Ready — add YouTube URLs and press Start")
-        self.status_label.setObjectName("dim")
+    def _build_statusbar(self):
+        self.status_label = QLabel("Ready — pick a tool to get started")
         self.statusBar().addWidget(self.status_label, 1)
+
+        self.spinner = Spinner(16)
+        self.statusBar().addPermanentWidget(self.spinner)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setVisible(False)
+        self.progress.setFixedWidth(180)
         self.statusBar().addPermanentWidget(self.progress)
 
-        splitter.addWidget(right)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([320, 960])
+        console_toggle = QLabel("Console")
+        console_toggle.setObjectName("dim")
+        console_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        console_toggle.mousePressEvent = lambda e: self._toggle_console(None)
+        self.statusBar().addPermanentWidget(console_toggle)
 
-    # -- queue lifecycle -------------------------------------------------- #
-    def _options(self) -> dict:
-        controls = self.settings._controls
-        num_clips = int(controls["num_clips"][0].value())
-        return {
-            "num_clips": num_clips,
-            "format": None,
-            "language": None,
-            "min_score": 0,
-            "render": False,
-            "accurate_cut": False,
-            "force": False,
-            "workers": 2,
-        }
+    def _build_shortcuts(self):
+        for index in range(4):
+            QShortcut(QKeySequence(f"Ctrl+{index + 1}"), self, activated=lambda i=index: self._on_nav(i))
+        QShortcut(QKeySequence("Ctrl+5"), self, activated=lambda: self._on_nav(5))
+        QShortcut(QKeySequence("Ctrl+`"), self, activated=lambda: self._toggle_console(None))
+        QShortcut(QKeySequence("Ctrl+L"), self, activated=self._focus_console)
 
-    def _start(self):
-        urls = self.sources.queue.urls()
-        if not urls:
-            self.status_label.setText("Nothing to do — add some URLs first.")
+    # -- navigation --------------------------------------------------------- #
+    def _on_nav(self, index: int):
+        if index == 4:  # console toggle
+            self._toggle_console(None)
             return
-        if self._worker and self._worker.isRunning():
+        page_index = {5: 4}.get(index, index)  # 5 -> settings page
+        if page_index >= self.stack.count():
             return
+        self.sidebar.set_active(index if index < 4 else 0)
+        self._switch_page(page_index)
 
-        self._apply_settings_to_env()
+    def _launch_tool(self, tool_id: str):
+        target = {"shorts": 1, "tiktok": 2, "swap": 3}.get(tool_id)
+        if target is None:
+            return
+        self.sidebar.set_active(target)
+        self._switch_page(target)
 
-        self._clear_results()
+    def _switch_page(self, index: int):
+        if self.stack.currentIndex() == index:
+            return
+        self.stack.setCurrentIndex(index)
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        widget = self.stack.currentWidget()
+        effect = QGraphicsOpacityEffect(widget)
+        widget.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity")
+        anim.setDuration(160)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setStartValue(0.35)
+        anim.setEndValue(1.0)
+        anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+
+    # -- console ------------------------------------------------------------ #
+    def _toggle_console(self, force: bool | None):
+        visible = force if force is not None else not self._console.isVisible()
+        self._console.setVisible(visible)
+        if visible:
+            self._focus_console()
+
+    def _focus_console(self):
+        self._console.setVisible(True)
+        self.console_filter.setFocus()
+
+    def _log(self, line: str):
+        self._log_lines.append(line)
+        if self._filter_match(line):
+            self.log_view.appendPlainText(line)
+
+    def _filter_match(self, line: str) -> bool:
+        text = self.console_filter.text().strip().lower()
+        return not text or text in line.lower()
+
+    def _refilter_log(self, _text: str):
         self.log_view.clear()
-        mode = self.sources.mode()
-        for url in urls:
-            self.log(f"queued [{mode}] {url}")
+        for line in self._log_lines:
+            if self._filter_match(line):
+                self.log_view.appendPlainText(line)
 
-        self.sources.set_running(True)
-        self.progress.setVisible(True)
-        self.status_label.setText(f"Processing {len(urls)} video(s)…")
+    def _clear_log(self):
+        self._log_lines.clear()
+        self.log_view.clear()
 
-        if mode == "tiktok":
-            delay = self.settings._controls["tiktok_delay"][0].value()
-            self._worker = TikTokWorker(
-                urls,
-                {"out_root": str(self._results_root), "workers": 1, "delay": float(delay)},
-                self,
-            )
-            self._worker.video_done.connect(self._on_tiktok_done)
-        else:
-            self._worker = PipelineWorker(urls, self._options(), self)
-            self._worker.video_done.connect(self._on_video_done)
-        self._worker.log.connect(self.log)
-        self._worker.queue_done.connect(self._on_queue_done)
-        self._worker.fatal.connect(lambda e: self.log(f"[studio] fatal: {e}"))
-        self._worker.start()
+    # -- busy state ---------------------------------------------------------- #
+    def _set_busy(self, page: QWidget, busy: bool):
+        self._busy_pages[page] = busy
+        any_busy = any(self._busy_pages.values())
+        self.spinner.set_running(any_busy)
+        self.progress.setVisible(any_busy)
 
-    def _stop(self):
-        if self._worker and self._worker.isRunning():
-            self.log("[studio] stopping after current videos…")
-            self._worker.cancel()
-
-    def _on_video_done(self, entry: dict):
-        if not entry.get("ok"):
-            self.log(f"FAIL {entry.get('url')}: {entry.get('error')}")
-            self._add_result(VideoResult(entry, None, error=str(entry.get("error", ""))))
-            return
-        video_id = entry.get("video_id") or ""
-        payload = {}
-        if video_id:
-            clips_path = self._results_root / video_id / "clips.json"
-            if clips_path.is_file():
-                try:
-                    payload = json.loads(clips_path.read_text(encoding="utf-8"))
-                except (OSError, ValueError) as e:
-                    self.log(f"[studio] could not read {clips_path}: {e}")
-            # thumbnail may predate the payload (re-run of an old run)
-            thumb = self._results_root / video_id / "thumbnail.jpg"
-            payload.setdefault("thumbnail_path", str(thumb) if thumb.is_file() else "")
-        self.log(
-            f"OK {video_id or entry.get('url')}: {entry.get('clips', 0)} clips"
-        )
-        self._add_result(VideoResult(entry, payload))
-        self.status_label.setText(f"Finished {entry.get('video_id') or entry.get('url')}")
-
-    def _on_tiktok_done(self, entry: dict):
-        if entry.get("ok"):
-            self.log(f"OK tiktok/{entry.get('video_id')}: {entry.get('title')}")
-        else:
-            self.log(f"FAIL {entry.get('url')}: {entry.get('error')}")
-        self._add_result(TikTokResult(entry))
-        self.status_label.setText(f"Finished tiktok/{entry.get('video_id') or '?'}")
-
-    def _on_queue_done(self, report: dict):
-        self.sources.set_running(False)
-        self.progress.setVisible(False)
-        ok = len(report.get("ok", []))
-        failed = len(report.get("failed", []))
-        cancelled = report.get("cancelled", False)
-        tail = " (cancelled)" if cancelled else ""
-        self.status_label.setText(f"Done — {ok} ok, {failed} failed{tail}")
-        self.log(f"[queue] done — {ok} ok, {failed} failed{tail}")
-
-    # -- helpers ---------------------------------------------------------- #
-    def _apply_settings_to_env(self):
-        """Push current settings into the process env so the worker's config
-        import (deferred to run()) picks them up without a restart."""
-        import os
-
-        for ctrl, env_key, kind in self.settings._controls.values():
-            if env_key.startswith("_"):
-                if env_key == "_SHORTS_FADE":
-                    os.environ["SHORTS_FADE_SECONDS"] = str(ctrl.value())
-                continue
-            if kind == "check":
-                os.environ[env_key] = "true" if ctrl.isChecked() else "false"
-            elif kind == "combo":
-                os.environ[env_key] = ctrl.currentText()
-            elif kind == "spin":
-                os.environ[env_key] = str(ctrl.value())
-            else:
-                value = ctrl.text().strip()
-                if value:
-                    os.environ[env_key] = value
-
-    def log(self, line: str):
-        self.log_view.appendPlainText(line)
-
-    def _clear_results(self):
-        while self.results_lay.count() > 1:  # keep trailing stretch
-            item = self.results_lay.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-
-    def _add_result(self, widget):
-        self.results_lay.insertWidget(self.results_lay.count() - 1, widget)
-        if hasattr(widget, "_cards"):
-            for card in widget._cards:
-                card.preview_cb = self.play_preview
-
-    def play_preview(self, video_id: str, start_seconds: float):
-        from .clip_card import _video_assets
-
-        _video_dir, source, _segments = _video_assets(video_id)
-        if not source or not os.path.isfile(source):
-            self.status_label.setText(f"Source not downloaded yet for {video_id}")
-            return
-        self.tabs.setCurrentWidget(self.preview)
-        self.preview.play_file(source, start_seconds)
+    def closeEvent(self, event):
+        for page in (self.shorts_page, self.tiktok_page, self.swap_page):
+            page.shutdown()
+        super().closeEvent(event)

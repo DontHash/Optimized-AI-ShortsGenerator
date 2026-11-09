@@ -39,11 +39,17 @@ def main() -> int:
         return 1
 
     from studio_app.main_window import MainWindow
-    from studio_app.theme import QSS
+    from studio_app.theme import ACCENT, QSS
 
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")  # consistent platform rendering under the QSS
     app.setApplicationName("ClipClipper Studio")
+    app.setApplicationDisplayName("ClipClipper Studio")
     app.setStyleSheet(QSS)
+
+    from studio_app import icons
+
+    app.setWindowIcon(icons.icon("spark", ACCENT, 64))
 
     window = MainWindow()
     window.show()

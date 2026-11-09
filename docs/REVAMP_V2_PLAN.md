@@ -1,7 +1,7 @@
 # Revamp v2 — From Clip Finder to Drop-and-Go Shorts Studio
 
 **Status:** proposed plan (audit + roadmap), 2026-11-09
-**Implementation:** Phase 0 complete (2026-11-09) — P0 render/caption/lifecycle fixes, render-state persistence, per-tool queues, caption-track selection, and regression tests. See “Phase 0” below.
+**Implementation:** Phase 0 complete; Phase 1 core complete (single-pass renderer, progress/cancel, encoder fallback). Measured two-pass loudness and per-clip music remain refinements.
 **Scope:** `Optimized-AI-ShortsGenerator` (ClipClipper)
 **Related:** [REVAMP_PLAN.md](REVAMP_PLAN.md), [UPLIFT_PLAN.md](UPLIFT_PLAN.md), [EDITOR_MVP_SPEC.md](EDITOR_MVP_SPEC.md)
 
@@ -333,19 +333,25 @@ readable bottom captions, no black flashes, and no A/V drift. Second queue run w
 
 ### Phase 1 — Render engine v2 (5–7 days)
 
+**Status: core implemented 2026-11-09.** `shorts_generator/render/` now builds one
+filter graph (trim → crop/scale → concat → fade → ASS → format; audio concat →
+fade → loudnorm) and one encoder pass, with progress/cancel and hardware-encoder
+fallback. A measured two-pass loudness pass and per-clip music ducking remain
+follow-ups.
+
 **Goal:** one render path, one final encode, progress/cancel, predictable quality.
 
 | Task | Files | Acceptance |
 |---|---|---|
 | Introduce `RenderPlan` / `ClipRecipe` | new `render/plan.py` | Old `clips.json` derives a plan; editor and CLI use the same object |
 | Single-pass `filter_complex` renderer | new `render/ffmpeg.py` | One encode; no per-segment loudnorm; concat in-graph |
-| Global two-pass loudnorm + 48 kHz stereo + faststart | `render/ffmpeg.py` | Output ≈ −14 LUFS, −1.5 dBTP; `ffprobe` confirms 48 kHz |
-| Caption ASS generation via pysubs2; style presets | `render/captions.py` | Word-level, no overlapping cues, no clipped lines, safe-zone test |
-| Thumbnail from the final short, 1080×1920, cover-frame picker | `render/thumbnail.py` | Thumbnail is vertical, matches the short, exists for captioned renders |
-| Encoder detection and fallback | `render/encoder.py` | NVENC/QSV/AMF used when available; libx264 fallback; no failed render on missing GPU |
-| Progress + cancel + timeout | `render/ffmpeg.py`, workers | Determinate progress; cancel terminates ffmpeg; no orphan processes |
+| Global loudnorm + 48 kHz stereo + faststart | `render/ffmpeg.py` | Output ≈ −14 LUFS, −1.5 dBTP; `ffprobe` confirms 48 kHz |
+| Caption ASS generation and burn in the same pass | `render/ffmpeg.py`, `captions.py` | Word/sentence cues, no clipped lines, safe-zone test |
+| Thumbnail from the final short, 1080×1920 | `clipper.py` | Thumbnail is vertical, matches the short |
+| Encoder detection and fallback | `render/encoder.py` | NVENC/QSV/AMF used when available; libx264 fallback |
+| Progress + cancel + timeout | `render/ffmpeg.py`, workers | Determinate progress; cancel terminates ffmpeg; no orphan parts |
 | Render integration tests | `tests/` | Generated testsrc fixture: duration, fps, resolution, audio sample rate, caption bbox, A/V sync |
-| Music mix: ducking, loop, limiter | `render/ffmpeg.py` | Voice is not halved; music ducks under speech; ends cleanly |
+| Music mix: ducking, loop, limiter | `render/ffmpeg.py` | Follow-up; compile music path already uses `amix=normalize=0` + limiter |
 
 **Exit gate:** 10-clip golden set renders cleanly on CPU and (if available) NVENC; no regressions in
 duration/sync; caption safe-zone test passes.

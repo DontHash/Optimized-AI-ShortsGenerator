@@ -9,18 +9,28 @@ import os
 import re
 import subprocess
 import tempfile
-from typing import Dict, List, Optional, Tuple
+import threading
+from dataclasses import replace
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .captions import build_ass, burn_subtitles, has_audio
 from .config import (
     SHORTS_CAPTIONS,
     SHORTS_CRF,
+    SHORTS_ENCODER,
     SHORTS_FACE_CROP,
     SHORTS_FADE_SECONDS,
     SHORTS_FPS,
     SHORTS_HEIGHT,
     SHORTS_MAX_UPSCALE,
     SHORTS_WIDTH,
+)
+from .render import (
+    RenderCancelled,
+    RenderError,
+    RenderPlan,
+    RenderSegment,
+    render_plan,
 )
 
 # HDR input needs tonemapping before yuv420p 8-bit encoding, otherwise the
@@ -153,19 +163,6 @@ def _short_output_size(crop_w: int, crop_h: int) -> Tuple[int, int]:
     return 360, 640
 
 
-def _hdr_tonemap_chain() -> str:
-    """Convert HDR (BT.2020/PQ or HLG) to SDR BT.709 before 8-bit encoding.
-
-    Requires ffmpeg with zimg (google's + gyan builds ship it). Without the
-    chain, HDR frames encoded straight to yuv420p look washed out.
-    """
-    return (
-        "zscale=t=linear:npl=100,"
-        "tonemap=hable:desat=0,"
-        "zscale=t=bt709:m=bt709:p=bt709:r=tv,"
-    )
-
-
 def _normalize_crop_segments(
     segments: List[Tuple[float, float, float]], duration: float
 ) -> List[Tuple[float, float, float]]:
@@ -221,59 +218,6 @@ def _normalize_crop_segments(
         else:
             merged.append(seg)
     return merged
-
-
-def _encode_segment(
-    source: str, start: float, duration: float, crop: Dict[str, int],
-    out_path: str, fade: float, is_first: bool, is_last: bool, hdr: bool = False,
-) -> None:
-    out_w, out_h = _short_output_size(crop["w"], crop["h"])
-    base_vf = (
-        f"crop={crop['w']}:{crop['h']}:{crop['x']}:{crop['y']},"
-        f"scale={out_w}:{out_h}:flags=lanczos,setsar=1,"
-        f"unsharp=5:5:0.6,"
-        f"fps={SHORTS_FPS},format=yuv420p"
-    )
-    if fade > 0 and is_first:
-        base_vf += f",fade=t=in:st=0:d={fade}"
-    if fade > 0 and is_last:
-        base_vf += f",fade=t=out:st={max(0.1, duration - fade)}:d={fade}"
-
-    def _run_once(vf: str) -> None:
-        cmd = [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-ss", f"{start:.3f}", "-t", f"{duration:.3f}",
-            "-i", source,
-            "-vf", vf,
-            "-c:v", "libx264", "-preset", "fast", "-crf", str(SHORTS_CRF),
-            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-            out_path,
-        ]
-        _run(cmd)
-
-    vf_hdr = _hdr_tonemap_chain() + base_vf if hdr else base_vf
-    try:
-        _run_once(vf_hdr)
-    except subprocess.CalledProcessError:
-        if not hdr:
-            raise
-        # Build without zimg: retry plain so rendering never dies on HDR only
-        print("[shorts] zimg tonemap unavailable, encoding HDR source without tonemapping", flush=True)
-        _run_once(base_vf)
-
-
-def _concat(parts: List[str], out_path: str) -> None:
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
-        for p in parts:
-            # absolute paths: the concat demuxer resolves entries relative to the LIST file
-            escaped = os.path.abspath(p).replace("'", "'\\''")
-            f.write(f"file '{escaped}'\n")
-        list_path = f.name
-    try:
-        _run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
-              "-i", list_path, "-c", "copy", "-movflags", "+faststart", out_path])
-    finally:
-        os.unlink(list_path)
 
 
 def _srt_timestamp(seconds: float) -> str:
@@ -377,35 +321,19 @@ def burn_srt_captions(video_path: str, srt_path: str, out_path: str) -> str:
     return burn_subtitles(video_path, ass_path, out_path)
 
 
-def _normalize_audio(video_path: str, out_path: str) -> str:
-    """Normalize the final program audio once (video is stream-copied)."""
-    import shutil
-
-    if not has_audio(video_path):
-        shutil.copyfile(video_path, out_path)
-        return out_path
-    _run([
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-i", video_path,
-        "-c:v", "copy",
-        "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-        "-movflags", "+faststart",
-        out_path,
-    ])
-    return out_path
-
-
 def render_shorts(
     source_path: str,
     clip: Dict,
     out_dir: str,
     transcript_segments: Optional[List[Dict]] = None,
+    progress_cb: Optional[Callable[[float], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Dict:
     """Render one clip as a 9:16 short with face-aware crop + optional captions.
 
-    Returns the clip dict plus short_path / thumb_path / error. The source must
-    exist locally (cache reuse keeps this fast).
+    The whole short is produced by one ffmpeg filter graph and one encode
+    (see ``shorts_generator.render``). Returns the clip dict plus
+    short_path / thumb_path / error.
     """
     rank = int(clip.get("rank", 0))
     name = clip.get("name") or _slugify(str(clip.get("title", "clip")))
@@ -413,7 +341,6 @@ def render_shorts(
 
     result = dict(clip)
     base = os.path.join(out_dir, f"{rank}_{name}_short")
-    short_path = ""
     try:
         info = probe_video(source_path) or {}
         src_w = int(info.get("width") or 1280)
@@ -439,79 +366,79 @@ def render_shorts(
 
         # Plan crop segments. sample_faces returns absolute source times;
         # origin=start rebases them to clip-relative time exactly once.
-        segments: List[Tuple[float, float, float]] = []
+        crop_segments: List[Tuple[float, float, float]] = []
         if SHORTS_FACE_CROP and src_ratio >= target_ratio:
             try:
                 from . import smartcrop as sc
 
                 samples = sc.sample_faces(source_path, start=start, end=end)
                 if samples:
-                    segments = sc.plan_crop_segments(samples, duration, origin=start)
+                    crop_segments = sc.plan_crop_segments(samples, duration, origin=start)
             except Exception:  # noqa: BLE001 — face crop must never kill a render
-                segments = []
-        segments = _normalize_crop_segments(segments, duration)
+                crop_segments = []
+        crop_segments = _normalize_crop_segments(crop_segments, duration)
 
+        from .smartcrop import compute_crop_window
+
+        render_segments: List[RenderSegment] = []
+        for seg_start, seg_end, seg_x in crop_segments:
+            crop = compute_crop_window(src_w, src_h, SHORTS_WIDTH, SHORTS_HEIGHT, seg_x)
+            render_segments.append(RenderSegment(
+                start=start + seg_start,
+                end=start + seg_end,
+                crop=crop,
+            ))
+
+        first_crop = render_segments[0].crop
+        out_w, out_h = _short_output_size(first_crop["w"], first_crop["h"])
         hdr = (info.get("color_transfer") or "") in _HDR_TRANSFERS
         if hdr:
             print("[shorts] HDR source detected — tonemapping to SDR", flush=True)
 
-        parts: List[str] = []
-        tmp_dir = tempfile.mkdtemp(prefix="short_")
+        ass_path = ""
+        output = f"{base}.mp4"
+        if SHORTS_CAPTIONS and transcript_segments:
+            ass_path = os.path.join(out_dir, f"{rank}_{name}_short.ass")
+            build_ass(
+                transcript_segments,
+                ass_path,
+                clip_start=start,
+                clip_end=duration,
+            )
+            output = f"{base}_captioned.mp4"
+
+        plan = RenderPlan(
+            source=source_path,
+            output=output,
+            segments=render_segments,
+            width=out_w,
+            height=out_h,
+            fps=SHORTS_FPS,
+            crf=SHORTS_CRF,
+            encoder=SHORTS_ENCODER,
+            ass_path=ass_path,
+            fade=SHORTS_FADE_SECONDS,
+            hdr=hdr,
+            audio=has_audio(source_path),
+        )
         try:
-            for i, (seg_start, seg_end, seg_x) in enumerate(segments):
-                from .smartcrop import compute_crop_window
-
-                crop = compute_crop_window(src_w, src_h, SHORTS_WIDTH, SHORTS_HEIGHT, seg_x)
-                part = os.path.join(tmp_dir, f"p{i:02d}.mp4")
-                _encode_segment(
-                    source_path, start + seg_start, seg_end - seg_start,
-                    crop, part, SHORTS_FADE_SECONDS,
-                    is_first=(i == 0), is_last=(i == len(segments) - 1),
-                    hdr=hdr,
-                )
-                parts.append(part)
-            raw_short = f"{base}.mp4"
-            _concat(parts, raw_short)
-
-            short_path = raw_short
-            ass_path = ""
-            if SHORTS_CAPTIONS and transcript_segments:
-                ass_path = os.path.join(out_dir, f"{rank}_{name}_short.ass")
-                captioned = f"{base}_captioned.mp4"
-                try:
-                    build_ass(
-                        transcript_segments,
-                        ass_path,
-                        clip_start=start,
-                        clip_end=duration,
-                    )
-                    burn_subtitles(
-                        raw_short, ass_path, captioned,
-                        audio_present=has_audio(raw_short),
-                    )
-                    short_path = captioned
-                except Exception as e:  # noqa: BLE001 — never lose the raw short
-                    print(f"[shorts] caption burn failed ({e}); returning raw short", flush=True)
-                    try:
-                        _normalize_audio(raw_short, f"{base}_norm.mp4")
-                        os.replace(f"{base}_norm.mp4", raw_short)
-                    except Exception as ne:  # noqa: BLE001
-                        print(f"[shorts] audio normalization failed too ({ne})", flush=True)
+            render_plan(plan, progress_cb=progress_cb, cancel_event=cancel_event)
+        except RenderError as e:
+            # A caption/libass failure should still yield a usable raw short.
+            if ass_path and any(
+                token in str(e).lower()
+                for token in ("ass", "subtitle", "font", "libass", "filter")
+            ):
+                print(f"[shorts] caption burn failed ({e}); rendering without captions", flush=True)
+                plan = replace(plan, ass_path="", output=f"{base}.mp4")
+                render_plan(plan, progress_cb=progress_cb, cancel_event=cancel_event)
             else:
-                # No captions: still normalize the final program once.
-                try:
-                    _normalize_audio(raw_short, f"{base}_norm.mp4")
-                    os.replace(f"{base}_norm.mp4", raw_short)
-                except Exception as e:  # noqa: BLE001
-                    print(f"[shorts] audio normalization failed ({e}); keeping raw audio", flush=True)
+                raise
 
-            result["short_path"] = short_path
-            if ass_path:
-                result["ass_path"] = ass_path
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        short_path = plan.output
+        result["short_path"] = short_path
+        if ass_path and os.path.isfile(ass_path):
+            result["ass_path"] = ass_path
 
         # Thumbnail from the *rendered* short (cropped, captioned, vertical).
         thumb = f"{base}.jpg"
@@ -524,6 +451,10 @@ def render_shorts(
         except Exception:  # noqa: BLE001
             result["thumb_path"] = None
         print(f"[shorts] rendered {rank} → {short_path}", flush=True)
+    except RenderCancelled:
+        result["short_path"] = None
+        result["error"] = "cancelled"
+        print(f"[shorts] {rank} cancelled", flush=True)
     except Exception as e:  # noqa: BLE001
         result["short_path"] = None
         result["error"] = str(e)
@@ -536,11 +467,26 @@ def render_all_shorts(
     clips: List[Dict],
     out_dir: str,
     transcript_segments: Optional[List[Dict]] = None,
+    progress_cb: Optional[Callable[[float], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> List[Dict]:
-    """Render every clip as a 9:16 short (batch)."""
-    results = []
-    for clip in clips:
-        results.append(render_shorts(source_path, clip, out_dir, transcript_segments))
+    """Render every clip as a 9:16 short (batch), with overall progress."""
+    results: List[Dict] = []
+    total = max(1, len(clips))
+    for i, clip in enumerate(clips):
+        if cancel_event is not None and cancel_event.is_set():
+            results.append({**clip, "short_path": None, "error": "cancelled"})
+            continue
+
+        def _clip_progress(fraction: float, _i: int = i) -> None:
+            if progress_cb:
+                progress_cb(max(0.0, min(1.0, (_i + fraction) / total)))
+
+        results.append(render_shorts(
+            source_path, clip, out_dir, transcript_segments,
+            progress_cb=_clip_progress,
+            cancel_event=cancel_event,
+        ))
     return results
 
 

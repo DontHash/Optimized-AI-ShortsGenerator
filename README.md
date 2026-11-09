@@ -210,6 +210,10 @@ Turn clips into ready-to-post vertical shorts:
   falls back to center crop when no faces. `pip install -e .[shorts]`
 - **One-click** — *Render Short 9:16* on any clip card (or *Render all as Shorts*);
   produces `output/<video_id>/<rank>_<name>_short.mp4` with fades + loudnorm
+- **Single-pass renderer** — one ffmpeg filter graph handles trim/crop/concat/fades,
+  captions, and loudness normalization in one encode; hardware H.264 encoders are
+  detected automatically with libx264 fallback, and renders show live progress
+  with cancellation
 - **Captions** — burn word-level ASS captions when a `.words.srt` cache exists,
   otherwise sentence-level cues; 1080×1920 layout, bottom safe zone, karaoke
   highlight, and a single final loudness pass (Settings → *burn captions*)
@@ -288,6 +292,7 @@ All knobs live in `.env`. Common settings:
 | `SPONSORBLOCK` | `true` | Exclude sponsor/intro/outro segments via sponsor.ajay.app |
 | `RERANK_WEIGHTS` | see `.env.example` | LLM / replay / audio / chapter fusion |
 | `AUDIO_ENERGY` | `true` | ffmpeg + numpy loudness scoring |
+| `SHORTS_ENCODER` | `auto` | `auto` / `libx264` / `h264_nvenc` / `h264_qsv` / `h264_amf`; falls back on failure |
 | `PEAK_LEAD_SECONDS` / `PEAK_TAIL_SECONDS` | `5` / `5` | Context around replay peaks |
 | `DEDUPE_SIMILARITY` | `0.6` | Transcript overlap threshold for near-duplicates |
 
@@ -355,8 +360,12 @@ shorts_generator/
   downloader.py           yt-dlp (YouTube + metadata for signals)
   transcriber.py          faster-whisper / auto-captions
   llm.py                  OpenAI / Gemini
-  clipper.py              ffmpeg cut (no crop)
+  clipper.py              ffmpeg cut + legacy short helpers
   captions.py             SRT / ASS / burn
+  render/                 Single-pass 9:16 render engine
+    plan.py               RenderPlan / RenderSegment
+    ffmpeg.py             filter graph, progress, cancel, fallbacks
+    encoder.py            hardware encoder detection + args
   config.py
   faceswap/               Local face-swap engine (ONNX)
     models.py             Model download + verification

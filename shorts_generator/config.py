@@ -114,6 +114,7 @@ SHORTS_WIDTH = int(os.getenv("SHORTS_WIDTH", "1080"))
 SHORTS_HEIGHT = int(os.getenv("SHORTS_HEIGHT", "1920"))
 SHORTS_FPS = int(os.getenv("SHORTS_FPS", "30"))
 SHORTS_CRF = int(os.getenv("SHORTS_CRF", "20"))
+SHORTS_ENCODER = os.getenv("SHORTS_ENCODER", "auto")  # auto | libx264 | h264_nvenc | h264_qsv | h264_amf
 SHORTS_FADE_SECONDS = float(os.getenv("SHORTS_FADE_SECONDS", "0.5"))
 SHORTS_MAX_UPSCALE = float(os.getenv("SHORTS_MAX_UPSCALE", "3.0"))
 SHORTS_CAPTIONS = os.getenv("SHORTS_CAPTIONS", "true").strip().lower() != "false"

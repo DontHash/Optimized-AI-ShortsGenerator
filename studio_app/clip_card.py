@@ -89,6 +89,7 @@ class ShortsRenderWorker(QThread):
     """Renders one 9:16 short (face-aware crop + optional captions)."""
 
     done = Signal(dict)  # full result dict (short_path, thumb_path, error, ...)
+    progress = Signal(float)  # 0.0 .. 1.0
 
     def __init__(self, source: str, clip: dict, out_dir: str, segments: list, parent=None):
         super().__init__(parent)
@@ -96,12 +97,20 @@ class ShortsRenderWorker(QThread):
         self._clip = clip
         self._out_dir = out_dir
         self._segments = segments
+        self._cancel = threading.Event()
+
+    def cancel(self):
+        self._cancel.set()
 
     def run(self):
         try:
             from shorts_generator.clipper import render_shorts
 
-            result = render_shorts(self._source, self._clip, self._out_dir, self._segments)
+            result = render_shorts(
+                self._source, self._clip, self._out_dir, self._segments,
+                progress_cb=self.progress.emit,
+                cancel_event=self._cancel,
+            )
             self.done.emit(result)
         except Exception as e:  # noqa: BLE001
             self.done.emit({
@@ -115,6 +124,7 @@ class BatchShortsWorker(QThread):
     """Renders every clip of one video as 9:16 shorts."""
 
     done = Signal(list)
+    progress = Signal(float)
 
     def __init__(self, source: str, clips: list, out_dir: str, segments: list, parent=None):
         super().__init__(parent)
@@ -122,12 +132,20 @@ class BatchShortsWorker(QThread):
         self._clips = clips
         self._out_dir = out_dir
         self._segments = segments
+        self._cancel = threading.Event()
+
+    def cancel(self):
+        self._cancel.set()
 
     def run(self):
         try:
             from shorts_generator.clipper import render_all_shorts
 
-            results = render_all_shorts(self._source, self._clips, self._out_dir, self._segments)
+            results = render_all_shorts(
+                self._source, self._clips, self._out_dir, self._segments,
+                progress_cb=self.progress.emit,
+                cancel_event=self._cancel,
+            )
             self.done.emit(results)
         except Exception as e:  # noqa: BLE001
             self.done.emit([{"error": str(e), "short_path": None} for _ in self._clips])
@@ -387,6 +405,14 @@ class ClipCard(QFrame):
         actions.addWidget(self.more_btn)
         lay.addLayout(actions)
 
+        self.render_progress = QProgressBar()
+        self.render_progress.setRange(0, 100)
+        self.render_progress.setValue(0)
+        self.render_progress.setTextVisible(True)
+        self.render_progress.setFormat("Rendering %p%")
+        self.render_progress.setVisible(False)
+        lay.addWidget(self.render_progress)
+
         self.thumb_label = QLabel()
         self.thumb_label.setVisible(False)
         lay.addWidget(self.thumb_label)
@@ -466,13 +492,20 @@ class ClipCard(QFrame):
             return
         self.short_btn.setEnabled(False)
         self.short_btn.setText("Rendering short…")
+        self.render_progress.setValue(0)
+        self.render_progress.setVisible(True)
         self._shorts_worker = ShortsRenderWorker(source, self._clip, video_dir, segments, self)
         self._shorts_worker.done.connect(self._shorts_done)
+        self._shorts_worker.progress.connect(self._on_shorts_progress)
         self._shorts_worker.start()
+
+    def _on_shorts_progress(self, fraction: float):
+        self.render_progress.setValue(int(max(0.0, min(1.0, fraction)) * 100))
 
     def _shorts_done(self, result: dict):
         path = str(result.get("short_path") or "")
         error = str(result.get("error") or "")
+        self.render_progress.setVisible(False)
         self.short_btn.setEnabled(True)
         if path and os.path.isfile(path):
             self._clip["short_path"] = path
@@ -488,14 +521,17 @@ class ClipCard(QFrame):
             self.open_btn.setEnabled(True)
             _persist_clip(self._video_id, self._clip)
         else:
-            self.short_btn.setText("Short failed")
-            self.short_btn.setToolTip(error or "unknown error")
+            cancelled = error == "cancelled"
+            self.short_btn.setText("Cancelled" if cancelled else "Short failed")
+            self.short_btn.setToolTip("" if cancelled else (error or "unknown error"))
         self.render_finished.emit()
 
     def shutdown(self):
         """Stop this card's workers before the widget is destroyed."""
         for worker in (self._render_worker, self._shorts_worker):
             if worker and worker.isRunning():
+                if hasattr(worker, "cancel"):
+                    worker.cancel()
                 worker.requestInterruption()
                 worker.wait(5000)
                 if worker.isRunning():
@@ -618,7 +654,11 @@ class VideoResult(QFrame):
         clips = [card._clip for card in self._cards]
         self._batch_worker = BatchShortsWorker(source, clips, video_dir, segments, self)
         self._batch_worker.done.connect(self._batch_done)
+        self._batch_worker.progress.connect(self._on_batch_progress)
         self._batch_worker.start()
+
+    def _on_batch_progress(self, fraction: float):
+        self.batch_btn.setText(f"Rendering shorts… {int(max(0.0, min(1.0, fraction)) * 100)}%")
 
     def _batch_done(self, results: list):
         self.batch_btn.setEnabled(True)
@@ -700,6 +740,8 @@ class VideoResult(QFrame):
             getattr(self, "_upload_worker", None),
         ):
             if worker and worker.isRunning():
+                if hasattr(worker, "cancel"):
+                    worker.cancel()
                 worker.requestInterruption()
                 worker.wait(5000)
                 if worker.isRunning():

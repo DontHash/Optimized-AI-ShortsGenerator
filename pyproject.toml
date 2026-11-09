@@ -54,7 +54,7 @@ Homepage = "https://github.com/DontHash/Optimized-AI-ShortsGenerator"
 
 [tool.setuptools]
 py-modules = ["main", "captions", "transcripts"]
-packages = ["shorts_generator", "shorts_generator.faceswap", "eval", "studio_app"]
+packages = ["shorts_generator", "shorts_generator.render", "shorts_generator.faceswap", "eval", "studio_app"]
 
 [tool.ruff]
 line-length = 120
